@@ -12,7 +12,7 @@ import {
 // Firebase設定
 // ---------------------------
 const firebaseConfig = {
-  apiKey: "AIzaSyBQ0EaxaTZPEJDJpP9K_AsNq74kyRhi5kQ",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY, 
   authDomain: "birthday-song-app.firebaseapp.com",
   projectId: "birthday-song-app",
   storageBucket: "birthday-song-app.firebasestorage.app",
@@ -99,7 +99,7 @@ const OrderPage = ({ user }) => {
         userEmail: user.email,
         plan: plan,
         ...formData,
-        status: "waiting", // waiting -> processing -> completed
+        status: "waiting",
         createdAt: serverTimestamp(),
       });
       alert("注文を受け付けました！完成をお待ちください。");
@@ -151,10 +151,9 @@ const OrderPage = ({ user }) => {
 const AdminPage = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sunoUrlInput, setSunoUrlInput] = useState({}); // 入力中のURLを管理
+  const [sunoUrlInput, setSunoUrlInput] = useState({});
 
-  // ★ここに取得したGeminiのAPIキーを貼り付けてください！
-  const GEMINI_API_KEY = "AIzaSyBuMrqGnKsh-X8phIHqKp7yPM4ZzU6Gufk"; 
+  const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
   // データ取得
   const fetchOrders = async () => {
@@ -180,8 +179,8 @@ const AdminPage = () => {
 
   // Geminiでプロンプト生成
   const handleGeneratePrompt = async (order) => {
-    if (!GEMINI_API_KEY || GEMINI_API_KEY.includes("ここに")) {
-      alert("APIキーが設定されていません。コードを確認してください。");
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "LOAD_FROM_ENV") {
+      alert("APIキーが設定されていません。コード内の LOAD_FROM_ENV を import.meta.env... に書き換えてください。");
       return;
     }
     if (!confirm(`${order.targetName}様のプロンプトを生成しますか？`)) return;
@@ -201,7 +200,7 @@ const AdminPage = () => {
     `;
 
     try {
-      // Gemini APIを呼び出し
+      // Gemini APIを呼び出し（gemini-2.5-flash）
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -210,7 +209,6 @@ const AdminPage = () => {
       
       const data = await response.json();
 
-      // ★エラーチェックを強化しました
       if (data.error) {
         throw new Error(data.error.message || "APIエラーが発生しました");
       }
@@ -225,14 +223,13 @@ const AdminPage = () => {
           status: "processing"
         });
         alert("プロンプト生成完了！");
-        fetchOrders(); // 画面更新
+        fetchOrders();
       } else {
         console.log("Response Data:", data);
         alert("生成に失敗しました。(AIが空の応答を返しました)");
       }
     } catch (error) {
       console.error(error);
-      // エラーの内容をアラートで表示
       alert(`エラーが発生しました:\n${error.message}`);
     }
   };
