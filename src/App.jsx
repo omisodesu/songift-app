@@ -66,6 +66,39 @@ const MAGIC_SPELLS = [
 ];
 
 // ---------------------------
+// 定数データ（プロモード用）
+// ---------------------------
+const PRO_GENRES = [
+  "J-pop（明るいポップス）",
+  "R&B（おしゃれでスムーズ）",
+  "Rock（パワフルで熱い）",
+  "Jazz（大人っぽく洗練）",
+  "Acoustic（温かみのある生音）",
+  "EDM（ノリノリでダンサブル）",
+  "Bossa Nova（リラックスした雰囲気）"
+];
+
+const PRO_INSTRUMENTS = [
+  "Piano（ピアノ）",
+  "Acoustic Guitar（アコースティックギター）",
+  "Electric Guitar（エレキギター）",
+  "Ukulele（ウクレレ）",
+  "Trumpet（トランペット）",
+  "Saxophone（サックス）",
+  "Violin（バイオリン）",
+  "Strings（ストリングス）",
+  "Bells（ベル・鐘）",
+  "Synthesizer（シンセサイザー）",
+  "Harmonica（ハーモニカ）",
+  "その他"
+];
+
+const PRO_GENDERS = [
+  "男性（Male）",
+  "女性（Female）"
+];
+
+// ---------------------------
 // ページコンポーネント
 // ---------------------------
 
@@ -116,15 +149,18 @@ const OrderPage = ({ user }) => {
   const navigate = useNavigate();
   const [plan, setPlan] = useState('simple');
   const [loading, setLoading] = useState(false);
+  const [otherInstrument, setOtherInstrument] = useState(''); // 「その他」楽器入力用
+  const [nameError, setNameError] = useState('');
+
   const [formData, setFormData] = useState({
     // 共通
     targetName: '',
-    // プロモード用
-    targetAge: '',
-    relation: '',
-    mood: '明るい',
-    episode: '',
-    genre: '',
+    // プロモード用（新）
+    proGenre: '',
+    proInstruments: [],
+    proGender: '',
+    proMessage1: '',
+    proMessage2: '',
     // 簡単モード（魔法診断）用
     targetColor: '',
     targetFeeling: [],
@@ -132,11 +168,26 @@ const OrderPage = ({ user }) => {
     magicSpell: '',
   });
 
+  // バリデーション関数
+  const validateName = (name) => {
+    // アルファベット、数字、ひらがな、カタカナ、長音、空白のみ許可（漢字はNG）
+    const regex = /^[a-zA-Z0-9ぁ-んァ-ンー\s]+$/;
+    return regex.test(name);
+  };
+
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
 
+    if (name === 'targetName') {
+      if (value !== '' && !validateName(value)) {
+        setNameError('※漢字は使用できません（ひらがな、カタカナ、英語のみ）');
+      } else {
+        setNameError('');
+      }
+    }
+
     if (type === 'checkbox') {
-      // 配列の処理 (targetFeeling)
+      // 既存の targetFeeling など
       setFormData(prev => {
         const newArray = checked
           ? [...prev[name], value]
@@ -148,15 +199,52 @@ const OrderPage = ({ user }) => {
     }
   };
 
+  // プロモード：楽器選択のハンドラ（その他対応）
+  const handleProInstrumentChange = (e) => {
+    const { value, checked } = e.target;
+    // 「その他」がチェックされた場合、他のロジックとは少し分ける（テキスト入力と連動するため、ここでは単純な配列操作）
+    // NOTE: 「その他」という文字列自体を配列に入れる
+    setFormData(prev => {
+      let newInstruments = [...prev.proInstruments];
+      if (checked) {
+        newInstruments.push(value);
+      } else {
+        newInstruments = newInstruments.filter(item => item !== value);
+        if (value === 'その他') setOtherInstrument(''); // チェック外れたら入力クリア
+      }
+      return { ...prev, proInstruments: newInstruments };
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // 最終バリデーション
+    if (nameError || !formData.targetName) {
+      alert("お名前の入力を確認してください。");
+      return;
+    }
+
     setLoading(true);
+
+    // 送信データの整形
+    let finalFormData = { ...formData };
+
+    // プロモードかつ「その他」楽器がある場合、配列内の「その他」を実際の入力値に置換（または追加）
+    if (plan === 'pro' && formData.proInstruments.includes('その他')) {
+      const instruments = formData.proInstruments.filter(i => i !== 'その他');
+      if (otherInstrument.trim()) {
+        instruments.push(`その他(${otherInstrument})`);
+      }
+      finalFormData.proInstruments = instruments;
+    }
+
     try {
       await addDoc(collection(db, "orders"), {
         userId: user.uid,
         userEmail: user.email,
         plan: plan,
-        ...formData,
+        ...finalFormData,
         status: "waiting",
         createdAt: serverTimestamp(),
       });
@@ -171,46 +259,39 @@ const OrderPage = ({ user }) => {
   };
 
   return (
-    <div className={`min-h-screen py-10 px-4 ${plan === 'simple' ? 'bg-pink-50' : 'bg-gray-50'}`}>
+    <div className={`min-h-screen py-10 px-4 ${plan === 'simple' ? 'bg-pink-50' : 'bg-gray-100'}`}>
       <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow">
         <h2 className="text-2xl font-bold text-center mb-6">楽曲作成オーダー</h2>
         <div className="flex justify-center mb-8">
           <button onClick={() => setPlan('simple')} className={`px-6 py-2 rounded-l-lg font-bold ${plan === 'simple' ? 'bg-pink-500 text-white' : 'bg-gray-200 text-gray-600'}`}>魔法診断 (Easy)</button>
-          <button onClick={() => setPlan('pro')} className={`px-6 py-2 rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード (Pro)</button>
+          <button onClick={() => setPlan('pro')} className={`px-6 py-2 rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード (Pro)</button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
-
-          {/* 共通項目: 名前 */}
-          <div className={`p-4 rounded-lg border-2 ${plan === 'simple' ? 'border-pink-100 bg-pink-50/30' : 'border-gray-200'}`}>
-            <label className="block text-sm font-bold text-gray-700 mb-2">Q1. 歌の中で、歌ってもらいたい呼び名は？</label>
-            <input
-              required
-              type="text"
-              name="targetName"
-              onChange={handleChange}
-              className="w-full border p-3 rounded bg-white"
-              placeholder="例：はなこ、ハナコ、Hanako"
-            />
-            <p className="text-xs text-gray-500 mt-1">※ひらがな、カタカナ、アルファベットOK（漢字不可）</p>
-          </div>
 
           {/* 簡単モード（魔法診断） */}
           {plan === 'simple' && (
             <>
               <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q1. 歌の中で、歌ってもらいたい呼び名は？</label>
+                <input
+                  required
+                  type="text"
+                  name="targetName"
+                  onChange={handleChange}
+                  className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`}
+                  placeholder="例：はなこ、ハナコ、hanako"
+                />
+                {nameError && <p className="text-xs text-red-500 mt-1 font-bold">{nameError}</p>}
+                <p className="text-xs text-gray-500 mt-1">※ひらがな、カタカナ、アルファベットOK（漢字不可）</p>
+              </div>
+
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
                 <label className="block text-sm font-bold text-gray-700 mb-2">Q2. その人を色で表すと？</label>
                 <div className="space-y-2">
                   {COLORS.map((c) => (
                     <label key={c.value} className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="targetColor"
-                        value={c.value}
-                        onChange={handleChange}
-                        required
-                        className="text-pink-500 focus:ring-pink-500"
-                      />
+                      <input type="radio" name="targetColor" value={c.value} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{c.label}</span>
                     </label>
                   ))}
@@ -222,13 +303,7 @@ const OrderPage = ({ user }) => {
                 <div className="grid grid-cols-2 gap-2">
                   {FEELINGS.map((f) => (
                     <label key={f.value} className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        name="targetFeeling"
-                        value={f.value}
-                        onChange={handleChange}
-                        className="text-pink-500 focus:ring-pink-500 rounded"
-                      />
+                      <input type="checkbox" name="targetFeeling" value={f.value} onChange={handleChange} className="text-pink-500 focus:ring-pink-500 rounded" />
                       <span>{f.label}</span>
                     </label>
                   ))}
@@ -240,14 +315,7 @@ const OrderPage = ({ user }) => {
                 <div className="space-y-2">
                   {MAGIC_WORDS.map((w) => (
                     <label key={w} className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="magicWord"
-                        value={w}
-                        onChange={handleChange}
-                        required
-                        className="text-pink-500 focus:ring-pink-500"
-                      />
+                      <input type="radio" name="magicWord" value={w} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{w}</span>
                     </label>
                   ))}
@@ -259,14 +327,7 @@ const OrderPage = ({ user }) => {
                 <div className="space-y-2">
                   {MAGIC_SPELLS.map((s) => (
                     <label key={s} className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="magicSpell"
-                        value={s}
-                        onChange={handleChange}
-                        required
-                        className="text-pink-500 focus:ring-pink-500"
-                      />
+                      <input type="radio" name="magicSpell" value={s} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{s}</span>
                     </label>
                   ))}
@@ -278,18 +339,107 @@ const OrderPage = ({ user }) => {
           {/* プロモード */}
           {plan === 'pro' && (
             <>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1">お相手の年齢</label><input required type="text" name="targetAge" onChange={handleChange} className="w-full border p-3 rounded" placeholder="例：24歳" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1">関係性</label><input required type="text" name="relation" onChange={handleChange} className="w-full border p-3 rounded" placeholder="例：恋人、親友" /></div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">曲の雰囲気</label>
-                <select name="mood" onChange={handleChange} className="w-full border p-3 rounded">
-                  <option value="明るい">明るい・ポップ</option>
-                  <option value="感動的">感動的・バラード</option>
-                  <option value="おしゃれ">おしゃれ・カフェ風</option>
-                </select>
+              {/* Q1 Genres */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q1. ジャンルを選んでください</label>
+                <div className="space-y-2">
+                  {PRO_GENRES.map((g) => (
+                    <label key={g} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="proGenre" value={g} onChange={handleChange} required className="text-indigo-600 focus:ring-indigo-500" />
+                      <span>{g}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1">具体的なジャンル</label><input type="text" name="genre" onChange={handleChange} className="w-full border p-3 rounded" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1">エピソード</label><textarea name="episode" onChange={handleChange} rows="4" className="w-full border p-3 rounded"></textarea></div>
+
+              {/* Q2 Instruments */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q2. 入れたい楽器を選んでください（何個でもOK）</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {PRO_INSTRUMENTS.map((ins) => (
+                    <div key={ins} className="col-span-1">
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          value={ins}
+                          checked={formData.proInstruments.includes(ins)}
+                          onChange={handleProInstrumentChange}
+                          className="text-indigo-600 focus:ring-indigo-500 rounded"
+                        />
+                        <span>{ins}</span>
+                      </label>
+                      {ins === 'その他' && formData.proInstruments.includes('その他') && (
+                        <input
+                          type="text"
+                          value={otherInstrument}
+                          onChange={(e) => setOtherInstrument(e.target.value)}
+                          placeholder="楽器名を入力"
+                          className="mt-1 ml-6 w-3/4 text-sm border-b border-gray-400 focus:outline-none focus:border-indigo-500 bg-transparent"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q3 Gender */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q3. 歌い手の性別を選んでください</label>
+                <div className="flex gap-6">
+                  {PRO_GENDERS.map((g) => (
+                    <label key={g} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="proGender" value={g} onChange={handleChange} required className="text-indigo-600 focus:ring-indigo-500" />
+                      <span>{g}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q4 Name */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q4. 歌の中で、歌ってもらいたい呼び名は？</label>
+                <input
+                  required
+                  type="text"
+                  name="targetName"
+                  onChange={handleChange}
+                  className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`}
+                  placeholder="例：はなこ、ハナコ、hanako"
+                />
+                {nameError && <p className="text-xs text-red-500 mt-1 font-bold">{nameError}</p>}
+                <p className="text-xs text-gray-500 mt-1">※ひらがな、カタカナ、アルファベットOK（漢字不可）</p>
+              </div>
+
+              {/* Q5 Messages */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q5. メッセージを入力してください（各30文字以内）</label>
+
+                <div className="mb-4">
+                  <span className="block text-xs font-bold text-indigo-700 mb-1">メッセージ1（Aメロ用）</span>
+                  <input
+                    type="text"
+                    name="proMessage1"
+                    maxLength={30}
+                    onChange={handleChange}
+                    className="w-full border p-2 rounded bg-white text-sm"
+                    placeholder="例：いつも美味しいご飯をありがとう"
+                  />
+                  <p className="text-right text-xs text-gray-400">{formData.proMessage1.length}/30</p>
+                </div>
+
+                <div>
+                  <span className="block text-xs font-bold text-indigo-700 mb-1">メッセージ2（Bメロ用）</span>
+                  <input
+                    type="text"
+                    name="proMessage2"
+                    maxLength={30}
+                    onChange={handleChange}
+                    className="w-full border p-2 rounded bg-white text-sm"
+                    placeholder="例：これからも元気で長生きしてね"
+                  />
+                  <p className="text-right text-xs text-gray-400">{formData.proMessage2.length}/30</p>
+                </div>
+              </div>
             </>
           )}
 
@@ -359,17 +509,18 @@ const AdminPage = () => {
         Output only the English prompt text. No explanations.
       `;
     } else {
-      // プロモードのプロンプト
+      // プロモードのプロンプト（新）
       systemPrompt = `
         You are a professional songwriter.
-        Based on the user info below, create an English prompt (Music Style & Lyrics Topic) for Suno AI to generate a birthday song.
+        Based on the detailed user info below, create an English prompt (Music Style & Lyrics Topic) for Suno AI to generate a birthday song.
         
         [User Info]
-        Target: ${order.targetName} (${order.targetAge}yo)
-        Relation: ${order.relation}
-        Mood: ${order.mood || 'Happy Birthday'}
-        Genre: ${order.genre}
-        Episode: ${order.episode}
+        Target Name: ${order.targetName}
+        Specified Genre: ${order.proGenre}
+        Singer: ${order.proGender}
+        Instruments: ${order.proInstruments?.join(", ")}
+        Message A: ${order.proMessage1}
+        Message B: ${order.proMessage2}
         
         Output only the English prompt text. No explanations.
       `;
@@ -481,10 +632,13 @@ Songift運営チーム
                     </div>
                   ) : (
                     <div className="mt-2 text-gray-700">
-                      <h3 className="text-xl font-bold mb-1">{order.targetName} 様 ({order.targetAge})</h3>
-                      <p>関係: {order.relation}</p>
-                      <p>雰囲気: {order.mood} {order.genre && `/ ${order.genre}`}</p>
-                      {order.episode && <p className="text-sm bg-gray-50 p-2 mt-2 rounded">エピソード: {order.episode}</p>}
+                      <h3 className="text-xl font-bold mb-1">{order.targetName} 様</h3>
+                      <p className="font-bold">🎵 {order.proGenre}</p>
+                      <p>🎤 {order.proGender} / 🎻 {Array.isArray(order.proInstruments) ? order.proInstruments.join(", ") : order.proInstruments}</p>
+                      <div className="mt-2 text-sm bg-gray-50 p-2 rounded">
+                        <p><span className="font-bold">A:</span> {order.proMessage1}</p>
+                        <p><span className="font-bold">B:</span> {order.proMessage2}</p>
+                      </div>
                     </div>
                   )}
 
