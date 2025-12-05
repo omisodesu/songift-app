@@ -3,9 +3,9 @@ import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-do
 // Firebase関連
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { 
-  getFirestore, collection, addDoc, serverTimestamp, 
-  query, orderBy, getDocs, doc, updateDoc 
+import {
+  getFirestore, collection, addDoc, serverTimestamp,
+  query, orderBy, getDocs, doc, updateDoc
 } from "firebase/firestore";
 
 // ---------------------------
@@ -27,7 +27,7 @@ const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
 
 // ---------------------------
-// 定数・データ
+// 定数データ（魔法診断用）
 // ---------------------------
 const COLORS = [
   { label: "🔴 情熱の赤（エネルギッシュ・明るい）", value: "Red (Energetic, Bright)" },
@@ -65,6 +65,9 @@ const MAGIC_SPELLS = [
   "🌈 希望の魔法（素敵な出会いがある）",
 ];
 
+// ---------------------------
+// 定数データ（プロモード用）
+// ---------------------------
 const PRO_GENRES = [
   "J-pop（明るいポップス）",
   "R&B（おしゃれでスムーズ）",
@@ -130,7 +133,7 @@ const LoginPage = () => {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-10 text-center bg-gray-50">
       <h2 className="text-2xl font-bold mb-6">ログイン</h2>
-      <button 
+      <button
         onClick={handleGoogleLogin}
         className="bg-white border border-gray-300 text-gray-700 font-bold py-3 px-6 rounded shadow hover:bg-gray-100 transition"
       >
@@ -146,30 +149,28 @@ const OrderPage = ({ user }) => {
   const navigate = useNavigate();
   const [plan, setPlan] = useState('simple');
   const [loading, setLoading] = useState(false);
-  const [otherInstrument, setOtherInstrument] = useState(''); 
+  const [otherInstrument, setOtherInstrument] = useState(''); // 「その他」楽器入力用
   const [nameError, setNameError] = useState('');
-  
+
   const [formData, setFormData] = useState({
+    // 共通
     targetName: '',
-    targetColor: '',
-    targetFeeling: [],
-    magicWord: '',
-    magicSpell: '',
-    // プロモード用
+    // プロモード用（新）
     proGenre: '',
     proInstruments: [],
     proGender: '',
     proMessage1: '',
     proMessage2: '',
-    // 旧データ互換
-    targetAge: '',
-    relation: '',
-    mood: '明るい',
-    episode: '',
-    genre: '',
+    // 簡単モード（魔法診断）用
+    targetColor: '',
+    targetFeeling: [],
+    magicWord: '',
+    magicSpell: '',
   });
 
+  // バリデーション関数
   const validateName = (name) => {
+    // アルファベット、数字、ひらがな、カタカナ、長音、空白のみ許可（漢字はNG）
     const regex = /^[a-zA-Z0-9ぁ-んァ-ンー\s]+$/;
     return regex.test(name);
   };
@@ -185,29 +186,31 @@ const OrderPage = ({ user }) => {
       }
     }
 
-    setFormData({ ...formData, [name]: value });
-  };
-
-  const handleCheckboxChange = (e) => {
-    const { value, checked } = e.target;
-    let newFeelings = [...formData.targetFeeling];
-    if (checked) {
-      newFeelings.push(value);
+    if (type === 'checkbox') {
+      // 既存の targetFeeling など
+      setFormData(prev => {
+        const newArray = checked
+          ? [...prev[name], value]
+          : prev[name].filter(item => item !== value);
+        return { ...prev, [name]: newArray };
+      });
     } else {
-      newFeelings = newFeelings.filter((item) => item !== value);
+      setFormData({ ...formData, [name]: value });
     }
-    setFormData({ ...formData, targetFeeling: newFeelings });
   };
 
-  const handleProCheckboxChange = (e) => {
+  // プロモード：楽器選択のハンドラ（その他対応）
+  const handleProInstrumentChange = (e) => {
     const { value, checked } = e.target;
+    // 「その他」がチェックされた場合、他のロジックとは少し分ける（テキスト入力と連動するため、ここでは単純な配列操作）
+    // NOTE: 「その他」という文字列自体を配列に入れる
     setFormData(prev => {
       let newInstruments = [...prev.proInstruments];
       if (checked) {
         newInstruments.push(value);
       } else {
         newInstruments = newInstruments.filter(item => item !== value);
-        if (value === 'その他') setOtherInstrument('');
+        if (value === 'その他') setOtherInstrument(''); // チェック外れたら入力クリア
       }
       return { ...prev, proInstruments: newInstruments };
     });
@@ -216,6 +219,7 @@ const OrderPage = ({ user }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    // 最終バリデーション
     if (nameError || !formData.targetName) {
       alert("お名前の入力を確認してください。");
       return;
@@ -223,7 +227,10 @@ const OrderPage = ({ user }) => {
 
     setLoading(true);
 
+    // 送信データの整形
     let finalFormData = { ...formData };
+
+    // プロモードかつ「その他」楽器がある場合、配列内の「その他」を実際の入力値に置換（または追加）
     if (plan === 'pro' && formData.proInstruments.includes('その他')) {
       const instruments = formData.proInstruments.filter(i => i !== 'その他');
       if (otherInstrument.trim()) {
@@ -252,74 +259,75 @@ const OrderPage = ({ user }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4">
+    <div className={`min-h-screen py-10 px-4 ${plan === 'simple' ? 'bg-pink-50' : 'bg-gray-100'}`}>
       <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow">
         <h2 className="text-2xl font-bold text-center mb-6">楽曲作成オーダー</h2>
-        
         <div className="flex justify-center mb-8">
-          <button onClick={() => setPlan('simple')} className={`px-6 py-2 rounded-l-lg font-bold ${plan === 'simple' ? 'bg-pink-500 text-white' : 'bg-gray-200 text-gray-600'}`}>簡単モード（魔法診断）</button>
-          <button onClick={() => setPlan('pro')} className={`px-6 py-2 rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード</button>
+          <button onClick={() => setPlan('simple')} className={`px-6 py-2 rounded-l-lg font-bold ${plan === 'simple' ? 'bg-pink-500 text-white' : 'bg-gray-200 text-gray-600'}`}>魔法診断 (Easy)</button>
+          <button onClick={() => setPlan('pro')} className={`px-6 py-2 rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード (Pro)</button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
-          
-          {/* ========== 簡単モード ========== */}
+
+          {/* 簡単モード（魔法診断） */}
           {plan === 'simple' && (
             <>
-              {/* Q1. 呼び名 */}
-              <div className="bg-pink-50 p-5 rounded-lg border border-pink-100">
-                <label className="block font-bold text-gray-800 mb-2">🎸 Q1. 歌の中で、歌ってもらいたい呼び名は？ <span className="text-red-500">*</span></label>
-                <p className="text-sm text-gray-500 mb-2">ひらがな、カタカナ、アルファベットOKです（漢字入力不可）</p>
-                <input required type="text" name="targetName" onChange={handleChange} className={`w-full border p-3 rounded ${nameError ? 'border-red-500' : ''}`} placeholder="例：ゆうちゃん、Hanako" />
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q1. 歌の中で、歌ってもらいたい呼び名は？</label>
+                <input
+                  required
+                  type="text"
+                  name="targetName"
+                  onChange={handleChange}
+                  className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`}
+                  placeholder="例：はなこ、ハナコ、hanako"
+                />
                 {nameError && <p className="text-xs text-red-500 mt-1 font-bold">{nameError}</p>}
+                <p className="text-xs text-gray-500 mt-1">※ひらがな、カタカナ、アルファベットOK（漢字不可）</p>
               </div>
 
-              {/* Q2. 色 */}
-              <div className="bg-pink-50 p-5 rounded-lg border border-pink-100">
-                <label className="block font-bold text-gray-800 mb-2">🌈 Q2. その人を色で表すと？ <span className="text-red-500">*</span></label>
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q2. その人を色で表すと？</label>
                 <div className="space-y-2">
                   {COLORS.map((c) => (
-                    <label key={c.label} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="radio" name="targetColor" value={c.value} onChange={handleChange} required className="form-radio text-pink-500" />
+                    <label key={c.value} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="targetColor" value={c.value} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{c.label}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Q3. 気持ち */}
-              <div className="bg-pink-50 p-5 rounded-lg border border-pink-100">
-                <label className="block font-bold text-gray-800 mb-2">✨ Q3. その人といると、どんな気持ち？ <span className="text-red-500">*</span></label>
-                <div className="space-y-2">
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q3. その人といると、どんな気持ち？ (複数選択可)</label>
+                <div className="grid grid-cols-2 gap-2">
                   {FEELINGS.map((f) => (
-                    <label key={f.label} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="checkbox" value={f.value} onChange={handleCheckboxChange} className="form-checkbox text-pink-500" />
+                    <label key={f.value} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="checkbox" name="targetFeeling" value={f.value} onChange={handleChange} className="text-pink-500 focus:ring-pink-500 rounded" />
                       <span>{f.label}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Q4. 魔法の言葉 */}
-              <div className="bg-pink-50 p-5 rounded-lg border border-pink-100">
-                <label className="block font-bold text-gray-800 mb-2">💌 Q4. 魔法の言葉を一つ贈るなら？ <span className="text-red-500">*</span></label>
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q4. 魔法の言葉を一つ贈るなら？</label>
                 <div className="space-y-2">
                   {MAGIC_WORDS.map((w) => (
                     <label key={w} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="radio" name="magicWord" value={w} onChange={handleChange} required className="form-radio text-pink-500" />
+                      <input type="radio" name="magicWord" value={w} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{w}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Q5. かけたい魔法 */}
-              <div className="bg-pink-50 p-5 rounded-lg border border-pink-100">
-                <label className="block font-bold text-gray-800 mb-2">🧚‍♀️ Q5. その人の新しい一年に、どんな魔法をかけたい？ <span className="text-red-500">*</span></label>
+              <div className="p-4 rounded-lg border-2 border-pink-100 bg-pink-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q5. その人の新しい一年に、どんな魔法をかけたい？</label>
                 <div className="space-y-2">
                   {MAGIC_SPELLS.map((s) => (
                     <label key={s} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="radio" name="magicSpell" value={s} onChange={handleChange} required className="form-radio text-pink-500" />
+                      <input type="radio" name="magicSpell" value={s} onChange={handleChange} required className="text-pink-500 focus:ring-pink-500" />
                       <span>{s}</span>
                     </label>
                   ))}
@@ -328,75 +336,109 @@ const OrderPage = ({ user }) => {
             </>
           )}
 
-          {/* ========== プロモード ========== */}
+          {/* プロモード */}
           {plan === 'pro' && (
             <>
-              {/* Q1. ジャンル */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q1. ジャンルを選んでください <span className="text-red-500">*</span></label>
+              {/* Q1 Genres */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q1. ジャンルを選んでください</label>
                 <div className="space-y-2">
                   {PRO_GENRES.map((g) => (
                     <label key={g} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="radio" name="proGenre" value={g} onChange={handleChange} required className="form-radio text-indigo-500" />
+                      <input type="radio" name="proGenre" value={g} onChange={handleChange} required className="text-indigo-600 focus:ring-indigo-500" />
                       <span>{g}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Q2. 楽器 */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q2. 入れたい楽器を選んでください（複数可） <span className="text-red-500">*</span></label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {PRO_INSTRUMENTS.map((i) => (
-                    <div key={i} className="col-span-1">
+              {/* Q2 Instruments */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q2. 入れたい楽器を選んでください（何個でもOK）</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {PRO_INSTRUMENTS.map((ins) => (
+                    <div key={ins} className="col-span-1">
                       <label className="flex items-center space-x-2 cursor-pointer">
-                        <input type="checkbox" value={i} checked={formData.proInstruments.includes(i)} onChange={handleProCheckboxChange} className="form-checkbox text-indigo-500" />
-                        <span>{i}</span>
+                        <input
+                          type="checkbox"
+                          value={ins}
+                          checked={formData.proInstruments.includes(ins)}
+                          onChange={handleProInstrumentChange}
+                          className="text-indigo-600 focus:ring-indigo-500 rounded"
+                        />
+                        <span>{ins}</span>
                       </label>
-                      {i === 'その他' && formData.proInstruments.includes('その他') && (
-                        <input type="text" value={otherInstrument} onChange={(e) => setOtherInstrument(e.target.value)} placeholder="楽器名を入力" className="mt-1 ml-6 w-3/4 text-sm border-b border-gray-400 focus:outline-none focus:border-indigo-500 bg-transparent" />
+                      {ins === 'その他' && formData.proInstruments.includes('その他') && (
+                        <input
+                          type="text"
+                          value={otherInstrument}
+                          onChange={(e) => setOtherInstrument(e.target.value)}
+                          placeholder="楽器名を入力"
+                          className="mt-1 ml-6 w-3/4 text-sm border-b border-gray-400 focus:outline-none focus:border-indigo-500 bg-transparent"
+                        />
                       )}
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Q3. 性別 */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q3. 歌い手の性別を選んでください <span className="text-red-500">*</span></label>
-                <div className="space-y-2">
+              {/* Q3 Gender */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q3. 歌い手の性別を選んでください</label>
+                <div className="flex gap-6">
                   {PRO_GENDERS.map((g) => (
                     <label key={g} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="radio" name="proGender" value={g} onChange={handleChange} required className="form-radio text-indigo-500" />
+                      <input type="radio" name="proGender" value={g} onChange={handleChange} required className="text-indigo-600 focus:ring-indigo-500" />
                       <span>{g}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
-              {/* Q4. 呼び名 */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q4. 歌の中で、歌ってもらいたい呼び名は？ <span className="text-red-500">*</span></label>
-                <p className="text-sm text-gray-500 mb-2">ひらがな、カタカナ、アルファベットOKです（漢字入力不可）</p>
-                <input required type="text" name="targetName" onChange={handleChange} className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`} placeholder="例：ゆうちゃん、Hanako" />
+              {/* Q4 Name */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q4. 歌の中で、歌ってもらいたい呼び名は？</label>
+                <input
+                  required
+                  type="text"
+                  name="targetName"
+                  onChange={handleChange}
+                  className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`}
+                  placeholder="例：はなこ、ハナコ、hanako"
+                />
                 {nameError && <p className="text-xs text-red-500 mt-1 font-bold">{nameError}</p>}
+                <p className="text-xs text-gray-500 mt-1">※ひらがな、カタカナ、アルファベットOK（漢字不可）</p>
               </div>
 
-              {/* Q5-1. メッセージ1 */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q5-1. メッセージ1（Aメロ用） <span className="text-red-500">*</span></label>
-                <p className="text-sm text-gray-500 mb-2">30文字以内で入力してください</p>
-                <input required type="text" name="proMessage1" maxLength={30} onChange={handleChange} className="w-full border p-3 rounded" placeholder="例：素敵な一年になりますように" />
-                <p className="text-right text-xs text-gray-400">{formData.proMessage1.length}/30</p>
-              </div>
+              {/* Q5 Messages */}
+              <div className="p-4 rounded-lg border-2 border-indigo-100 bg-indigo-50/30">
+                <label className="block text-sm font-bold text-gray-700 mb-2">Q5. メッセージを入力してください（各30文字以内）</label>
 
-              {/* Q5-2. メッセージ2 */}
-              <div className="bg-indigo-50 p-5 rounded-lg border border-indigo-100">
-                <label className="block font-bold text-gray-800 mb-2">Q5-2. メッセージ2（Bメロ用） <span className="text-red-500">*</span></label>
-                <p className="text-sm text-gray-500 mb-2">30文字以内で入力してください</p>
-                <input required type="text" name="proMessage2" maxLength={30} onChange={handleChange} className="w-full border p-3 rounded" placeholder="例：いつもありがとう" />
-                <p className="text-right text-xs text-gray-400">{formData.proMessage2.length}/30</p>
+                <div className="mb-4">
+                  <span className="block text-xs font-bold text-indigo-700 mb-1">メッセージ1（Aメロ用）</span>
+                  <input
+                    type="text"
+                    name="proMessage1"
+                    maxLength={30}
+                    onChange={handleChange}
+                    className="w-full border p-2 rounded bg-white text-sm"
+                    placeholder="例：いつも美味しいご飯をありがとう"
+                  />
+                  <p className="text-right text-xs text-gray-400">{formData.proMessage1.length}/30</p>
+                </div>
+
+                <div>
+                  <span className="block text-xs font-bold text-indigo-700 mb-1">メッセージ2（Bメロ用）</span>
+                  <input
+                    type="text"
+                    name="proMessage2"
+                    maxLength={30}
+                    onChange={handleChange}
+                    className="w-full border p-2 rounded bg-white text-sm"
+                    placeholder="例：これからも元気で長生きしてね"
+                  />
+                  <p className="text-right text-xs text-gray-400">{formData.proMessage2.length}/30</p>
+                </div>
               </div>
             </>
           )}
@@ -418,6 +460,7 @@ const AdminPage = () => {
 
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
+  // データ取得
   const fetchOrders = async () => {
     try {
       const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
@@ -439,9 +482,10 @@ const AdminPage = () => {
     fetchOrders();
   }, []);
 
+  // Geminiでプロンプト生成
   const handleGeneratePrompt = async (order) => {
-    if (!GEMINI_API_KEY) {
-      alert("APIキー設定エラー");
+    if (!GEMINI_API_KEY || GEMINI_API_KEY === "LOAD_FROM_ENV") {
+      alert("APIキーが設定されていません。コード内の LOAD_FROM_ENV を import.meta.env... に書き換えてください。");
       return;
     }
     if (!confirm(`${order.targetName}様のプロンプトを生成しますか？`)) return;
@@ -452,83 +496,22 @@ const AdminPage = () => {
       // ---------------------------
       // 簡単モード (Simple) のプロンプト
       // ---------------------------
-      systemPrompt = `
-        あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
-        以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
-
-        【フォーム回答】
-        Q1. お誕生日の主役のお名前：${order.targetName}
-        Q2. その人を色で表すと：${order.targetColor}
-        Q3. その人といると、どんな気持ち：${Array.isArray(order.targetFeeling) ? order.targetFeeling.join(", ") : order.targetFeeling}
-        Q4. 魔法の言葉を一つ贈るなら：${order.magicWord}
-        Q5. その人の新しい一年に、どんな魔法をかけたい：${order.magicSpell}
-
-        【歌詞創作ルール（重要）】
-        Q4とQ5の選択肢をそのまま使わず、その「意味・感情・メッセージ」を理解して、自然で詩的な日本語の歌詞に創作してください。毎回異なる表現にしてください。
-
-        ■ Verse（8〜15文字程度、1〜2行）
-        Q4のメッセージの本質的な意味を、歌いやすく自然な日本語で表現してください。
-        (創作方針例)
-        - いつもありがとう → 感謝・支えへの気持ち
-        - 出会えて本当によかった → 出会いへの感謝・奇跡
-        - 夢を応援してるよ → 応援・サポート
-        - 最高の一年になりますように → 祝福・幸せへの願い
-        - あなたは特別な存在 → 唯一無二の存在感
-        - これからもよろしくね → 友情・関係継続
-        - ずっと友達でいてね → 永続的な友情
-
-        ■ Pre-Chorus（10〜18文字程度、1〜2行）
-        Q5の魔法に対応する、前向きで温かいオリジナルフレーズにしてください。
-        (創作方針例)
-        - キラキラ輝く魔法 → 夢・希望・輝き
-        - 勇気が湧く魔法 → 勇気・挑戦・成長
-        - 愛に包まれる魔法 → 愛情・温かさ・優しさ
-        - 笑顔が溢れる魔法 → 笑顔・楽しさ・喜び
-        - 希望の魔法 → 希望・出会い・新しい世界
-
-        【変換ルール】
-        ■ Q2（色）→ ジャンル・BPM・楽器の変換
-        - 情熱の赤 → Rock, 140 bpm, electric guitar, drums
-        - 元気な黄色 → J-pop, 100 bpm, piano, acoustic guitar
-        - 優しい青 → R&B, 75 bpm, piano, saxophone
-        - 癒しの緑 → Jazz, 90 bpm, piano, saxophone
-        - 個性的な紫 → J-pop, 100 bpm, synthesizer, electric guitar
-        - 純粋な白 → J-pop, 100 bpm, piano, strings
-
-        ■ Q3（気持ち）→ ボーカル性別の決定
-        - 「元気が出る」「笑える」「刺激的」が含まれる → male
-        - 「安心する」「幸せ」が含まれる → female
-        - その他・複数選択 → female
-
-        ■ Q5（魔法）→ 追加タグ
-        - キラキラ輝く魔法 → #bright #dreamy
-        - 勇気が湧く魔法 → #powerful #uplifting
-        - 愛に包まれる魔法 → #warm #emotional
-        - 笑顔が溢れる魔法 → #cheerful #fun
-        - 希望の魔法 → #hopeful #inspiring
-
-        【出力フォーマット (JSON)】
-        必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
-        {
-          "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
-          "sunoPrompt": "happy birthday | (Q2から変換したジャンル) | (Q2から変換したBPM) | key: C | (Q2から変換した楽器), clap | Japanese (Q3から決定したvocal) vocal | #birthday #upbeat #groovy (Q5から変換した追加タグ)"
-        }
-      `;
+      systemPrompt = "DEBUG_SIMPLE_STRING";
     } else {
       // ---------------------------
       // プロモード (Pro) のプロンプト
       // ---------------------------
-      systemPrompt = `
+      systemPrompt = \`
         あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
         以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
 
         【フォーム回答】
-        質問1（ジャンル）：${order.proGenre}
-        質問2（楽器）：${Array.isArray(order.proInstruments) ? order.proInstruments.join(", ") : order.proInstruments}
-        質問3（性別）：${order.proGender}
-        質問4（名前）：${order.targetName}
-        質問5-1（メッセージ1）：${order.proMessage1}
-        質問5-2（メッセージ2）：${order.proMessage2}
+        質問1（ジャンル）：\${order.proGenre}
+        質問2（楽器）：\${Array.isArray(order.proInstruments) ? order.proInstruments.join(", ") : order.proInstruments}
+        質問3（性別）：\${order.proGender}
+        質問4（名前）：\${order.targetName}
+        質問5-1（メッセージ1）：\${order.proMessage1}
+        質問5-2（メッセージ2）：\${order.proMessage2}
 
         【抽出・変換ルール】
         ■ 質問1（ジャンル）→ ジャンル名とBPMを抽出
@@ -555,14 +538,17 @@ const AdminPage = () => {
         【出力フォーマット (JSON)】
         必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
         {
-          "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(質問5-1の回答をひらがな変換したもの)\\n[Pre-Chorus]\\n(質問5-2の回答をひらがな変換したもの)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+          "lyrics": "[Chorus]\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}\\n[Verse]\\n(質問5-1の回答をひらがな変換したもの)\\n[Pre-Chorus]\\n(質問5-2の回答をひらがな変換したもの)\\n[Chorus]\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}\\nhappy birthday \${order.targetName}",
           "sunoPrompt": "happy birthday | (質問1から抽出したジャンル名) | (質問1から抽出したBPM) | key: C | (質問2から抽出した楽器名小文字), clap | Japanese (質問3から抽出したvocal小文字) vocal | #birthday #upbeat #groovy"
         }
-      `;
+      \`;
     }
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      // Gemini APIを呼び出し（gemini-2.5-flash）
+      // JSONモード（response_mime_type: "application/json"）はv1betaの一部モデルで有効ですが、
+      // ここではプロンプトで強制しテキストとして受け取ってパースする汎用的な方法をとります
+      const response = await fetch(\`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\${GEMINI_API_KEY}\`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] })
@@ -577,17 +563,19 @@ const AdminPage = () => {
       const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (generatedText) {
-        let cleanJsonText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
+        // JSONパースの試み（マークダウンのコードブロック \`\`\`json ... \`\`\` が含まれている場合への対策）
+        let cleanJsonText = generatedText.replace(/\`\`\`json/g, "").replace(/\`\`\`/g, "").trim();
         let parsedResult = null;
         
         try {
           parsedResult = JSON.parse(cleanJsonText);
         } catch (e) {
           console.error("JSON Parse Error:", e);
-          alert("AIの応答が正しい形式ではありませんでした。\n" + cleanJsonText);
+          alert("AIの応答が正しい形式ではありませんでした。\\n" + cleanJsonText);
           return;
         }
 
+        // Firestoreに保存 (lyricsとpromptを個別に保存)
         const orderRef = doc(db, "orders", order.id);
         await updateDoc(orderRef, {
           generatedLyrics: parsedResult.lyrics,
@@ -597,14 +585,16 @@ const AdminPage = () => {
         alert("生成完了！歌詞とプロンプトが作成されました。");
         fetchOrders();
       } else {
+        console.log("Response Data:", data);
         alert("生成に失敗しました。(AIが空の応答を返しました)");
       }
     } catch (error) {
       console.error(error);
-      alert(`エラーが発生しました:\n${error.message}`);
+      alert(\`エラーが発生しました:\\n\${error.message}\`);
     }
   };
 
+  // Suno URLの保存
   const handleSaveUrl = async (orderId) => {
     const url = sunoUrlInput[orderId];
     if (!url) return;
@@ -623,21 +613,22 @@ const AdminPage = () => {
     }
   };
 
+  // 納品メール（メーラー起動）
   const handleSendMail = (order) => {
-    const subject = `【Songift】バースデーソングの納品：${order.targetName}様へ`;
-    const body = `
-${order.targetName}様
+    const subject = \`【Songift】バースデーソングの納品：\${order.targetName}様へ\`;
+    const body = \`
+\${order.targetName}様
 
 Songiftをご利用いただきありがとうございます。
 ご注文いただいたバースデーソングが完成いたしました！
 
 以下のURLよりお聞きください：
-${order.sunoUrl}
+\${order.sunoUrl}
 
 素敵な誕生日になりますように。
 Songift運営チーム
-    `;
-    window.location.href = `mailto:${order.userEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    \`;
+    window.location.href = \`mailto:\${order.userEmail}?subject=\${encodeURIComponent(subject)}&body=\${encodeURIComponent(body)}\`;
   };
 
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
@@ -654,11 +645,11 @@ Songift運営チーム
               <div className="flex justify-between items-start border-b pb-4 mb-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' : 'bg-pink-100 text-pink-800'}`}>
+                    <span className={\`px-3 py-1 rounded-full text-xs font-bold \${order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' : 'bg-pink-100 text-pink-800'}\`}>
                       {order.plan === 'simple' ? '魔法診断' : 'プロ'}
                     </span>
                     <span className="text-sm text-gray-500">{order.createdAt}</span>
-                    <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                    <span className={\`px-2 py-1 rounded text-xs font-bold \${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}\`}>
                       {order.status}
                     </span>
                   </div>
@@ -745,26 +736,41 @@ Songift運営チーム
                 {/* 右：Suno URL登録と納品 */}
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-bold text-gray-700 mb-2">2. 楽曲登録 & 納品</h4>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      placeholder="Sunoで作ったURLを貼る"
-                      className="flex-1 border p-2 rounded text-sm"
-                      onChange={(e) => setSunoUrlInput({...sunoUrlInput, [order.id]: e.target.value})}
-                    />
-                    <button 
-                      onClick={() => handleSaveUrl(order.id)}
-                      className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700"
-                    >
-                      保存
-                    </button>
-                  </div>
-                  {order.sunoUrl && <button onClick={() => handleSendMail(order)} className="mt-2 bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 w-full font-bold">メールで納品する 📧</button>}
+                  {order.sunoUrl ? (
+                    <div>
+                      <p className="text-sm text-green-600 font-bold mb-2">楽曲登録済み</p>
+                      <a href={order.sunoUrl} target="_blank" rel="noreferrer" className="text-blue-500 underline text-sm block mb-4">
+                        {order.sunoUrl}
+                      </a>
+                      <button 
+                        onClick={() => handleSendMail(order)}
+                        className="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 transition w-full font-bold"
+                      >
+                        メールで納品する 📧
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        placeholder="Sunoで作ったURLを貼る"
+                        className="flex-1 border p-2 rounded text-sm"
+                        onChange={(e) => setSunoUrlInput({...sunoUrlInput, [order.id]: e.target.value})}
+                      />
+                      <button 
+                        onClick={() => handleSaveUrl(order.id)}
+                        className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700"
+                      >
+                        保存
+                      </button>
+                    </div>
+                  )}
                 </div>
 
               </div>
             </div>
           ))}
+          {orders.length === 0 && <p className="text-center text-gray-500">注文はありません</p>}
         </div>
       </div>
     </div>
