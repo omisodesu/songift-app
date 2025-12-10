@@ -13,6 +13,7 @@ import {
 // ---------------------------
 const firebaseConfig = {
   // 環境変数から読み込み（Vite標準の書き方）
+  // ※プレビュー環境で警告が出ますが、ローカル環境では正常に動作します
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "birthday-song-app.firebaseapp.com",
   projectId: "birthday-song-app",
@@ -30,11 +31,12 @@ const db = getFirestore(app);
 // ---------------------------
 // 管理者リストの定義（複数対応）
 // ---------------------------
-// 環境変数から読み込み、カンマで区切って配列にする
-// ※プレビュー環境で警告が出ても、ローカル(Vite)では正常に動作します
 const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAIL || "")
   .split(',')
   .map(email => email.trim());
+
+// 管理者チェック機能が有効かどうか（デフォルトは有効）
+const IS_ADMIN_CHECK_ENABLED = import.meta.env.VITE_ENABLE_ADMIN_CHECK !== 'false';
 
 // ---------------------------
 // 定数・データ
@@ -426,6 +428,7 @@ const AdminPage = () => {
   const [loading, setLoading] = useState(true);
   const [sunoUrlInput, setSunoUrlInput] = useState({});
 
+  // 環境変数から読み込み
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
   const fetchOrders = async () => {
@@ -448,13 +451,17 @@ const AdminPage = () => {
   // アクセス制限のチェック
   const { user } = auth; // 現在のユーザーを取得
   useEffect(() => {
-    // ユーザーが存在しない、または管理者リストに含まれていない場合
-    if (!auth.currentUser || !ADMIN_EMAILS.includes(auth.currentUser.email)) {
-      alert("権限がありません。トップページへ戻ります。");
-      window.location.href = '/'; 
-    } else {
-      fetchOrders();
+    // スイッチがON(true)の時だけ、制限チェックを行う
+    if (IS_ADMIN_CHECK_ENABLED) {
+      // ユーザーが存在しない、または管理者リストに含まれていない場合
+      if (!auth.currentUser || !ADMIN_EMAILS.includes(auth.currentUser.email)) {
+        alert("権限がありません。トップページへ戻ります。");
+        window.location.href = '/'; 
+        return; // ここで処理終了
+      }
     }
+    // 制限をクリア（またはスイッチOFF）ならデータ取得
+    fetchOrders();
   }, []);
 
   const handleGeneratePrompt = async (order) => {
@@ -817,8 +824,8 @@ function App() {
         <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
           <div className="flex items-center gap-6">
             <Link to="/" className="font-bold text-blue-600 text-xl">Songift</Link>
-            {/* 複数管理者対応: メールアドレスリストに含まれているかチェック */}
-            {ADMIN_EMAILS.includes(user.email) && (
+            {/* スイッチON かつ 管理者の場合のみ表示、または スイッチOFFなら全員に表示 */}
+            {(!IS_ADMIN_CHECK_ENABLED || ADMIN_EMAILS.includes(user.email)) && (
               <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
                 管理者画面へ
               </Link>
@@ -835,7 +842,7 @@ function App() {
         <Route path="/" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <TopPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/order" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <LoginPage />} />
-        {/* 管理者ページのルート: ここでも念のためガードを入れておく */}
+        {/* 管理者ページのルート */}
         <Route path="/admin" element={user ? <div className="pt-16"><AdminPage /></div> : <LoginPage />} />
       </Routes>
     </BrowserRouter>
