@@ -12,6 +12,7 @@ import {
 // Firebase設定
 // ---------------------------
 const firebaseConfig = {
+  // 環境変数から読み込み（Vite標準の書き方）
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "birthday-song-app.firebaseapp.com",
   projectId: "birthday-song-app",
@@ -25,6 +26,15 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
+
+// ---------------------------
+// 管理者リストの定義（複数対応）
+// ---------------------------
+// 環境変数から読み込み、カンマで区切って配列にする
+// ※プレビュー環境で警告が出ても、ローカル(Vite)では正常に動作します
+const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAIL || "")
+  .split(',')
+  .map(email => email.trim());
 
 // ---------------------------
 // 定数・データ
@@ -435,8 +445,16 @@ const AdminPage = () => {
     }
   };
 
+  // アクセス制限のチェック
+  const { user } = auth; // 現在のユーザーを取得
   useEffect(() => {
-    fetchOrders();
+    // ユーザーが存在しない、または管理者リストに含まれていない場合
+    if (!auth.currentUser || !ADMIN_EMAILS.includes(auth.currentUser.email)) {
+      alert("権限がありません。トップページへ戻ります。");
+      window.location.href = '/'; 
+    } else {
+      fetchOrders();
+    }
   }, []);
 
   const handleGeneratePrompt = async (order) => {
@@ -799,9 +817,12 @@ function App() {
         <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
           <div className="flex items-center gap-6">
             <Link to="/" className="font-bold text-blue-600 text-xl">Songift</Link>
-            <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
-              管理者画面へ
-            </Link>
+            {/* 複数管理者対応: メールアドレスリストに含まれているかチェック */}
+            {ADMIN_EMAILS.includes(user.email) && (
+              <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
+                管理者画面へ
+              </Link>
+            )}
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600">{user.displayName}さん</span>
@@ -814,6 +835,7 @@ function App() {
         <Route path="/" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <TopPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/order" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <LoginPage />} />
+        {/* 管理者ページのルート: ここでも念のためガードを入れておく */}
         <Route path="/admin" element={user ? <div className="pt-16"><AdminPage /></div> : <LoginPage />} />
       </Routes>
     </BrowserRouter>
