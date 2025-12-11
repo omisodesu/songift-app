@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "birthday-song-app",
     "public": "dist",
     "ignore": [
       "firebase.json",
