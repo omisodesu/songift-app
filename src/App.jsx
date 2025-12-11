@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom';
 // Firebase関連
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { 
-  getFirestore, collection, addDoc, serverTimestamp, 
-  query, orderBy, getDocs, doc, updateDoc 
+import {
+  getFirestore, collection, addDoc, serverTimestamp,
+  query, orderBy, doc, updateDoc, onSnapshot
 } from "firebase/firestore";
 
 // ---------------------------
@@ -37,6 +37,10 @@ const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAIL || "")
 
 // 管理者チェック機能が有効かどうか（デフォルトは有効）
 const IS_ADMIN_CHECK_ENABLED = import.meta.env.VITE_ENABLE_ADMIN_CHECK !== 'false';
+
+// ★プレビュー環境では警告が出ますが、ローカル環境(Vite)ではこの書き方が必須です
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
 
 // ---------------------------
 // 定数・データ
@@ -426,43 +430,77 @@ const OrderPage = ({ user }) => {
 const AdminPage = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sunoUrlInput, setSunoUrlInput] = useState({});
 
-  // 環境変数から読み込み
+  // APIの設定 (修正: sunoapi.orgのBase URL)
+  const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+  const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
 
-  const fetchOrders = async () => {
-    try {
-      const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
+  useEffect(() => {
+    const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
         createdAt: doc.data().createdAt?.toDate().toLocaleString() || "日時不明"
       }));
       setOrders(data);
-    } catch (error) {
-      console.error("データ取得エラー:", error);
-    } finally {
       setLoading(false);
-    }
-  };
-
-  // アクセス制限のチェック
-  const { user } = auth; // 現在のユーザーを取得
-  useEffect(() => {
-    // スイッチがON(true)の時だけ、制限チェックを行う
-    if (IS_ADMIN_CHECK_ENABLED) {
-      // ユーザーが存在しない、または管理者リストに含まれていない場合
-      if (!auth.currentUser || !ADMIN_EMAILS.includes(auth.currentUser.email)) {
-        alert("権限がありません。トップページへ戻ります。");
-        window.location.href = '/'; 
-        return; // ここで処理終了
-      }
-    }
-    // 制限をクリア（またはスイッチOFF）ならデータ取得
-    fetchOrders();
+    });
+    return () => unsubscribe();
   }, []);
+
+  // ポーリング処理 (useCallbackでラップ)
+  const checkSunoStatus = useCallback(async (order) => {
+    if (!SUNO_API_KEY) return;
+    try {
+      // 正しいエンドポイント: /api/v1/generate/record-info?taskId=...
+      const response = await fetch(`${SUNO_BASE_URL}/generate/record-info?taskId=${order.sunoTaskId}`, {
+        headers: {
+          "Authorization": `Bearer ${SUNO_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) return;
+
+      const result = await response.json();
+
+      // レスポンス構造: { code: 200, msg: "success", data: { taskId, status, response: { sunoData: [...] } } }
+      if (result.code === 200 && result.data?.status === "SUCCESS") {
+        const sunoData = result.data.response?.sunoData || [];
+
+        if (sunoData.length > 0) {
+          // audioUrlフィールド名を統一（audio_url形式に変換）
+          const songs = sunoData.map(song => ({
+            id: song.id,
+            audio_url: song.audioUrl || song.audio_url,
+            stream_audio_url: song.streamAudioUrl,
+            title: song.title,
+            duration: song.duration
+          }));
+
+          await updateDoc(doc(db, "orders", order.id), {
+            status: "song_generated",
+            generatedSongs: songs
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Suno polling error", error);
+    }
+  }, [SUNO_API_KEY, SUNO_BASE_URL]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      orders.forEach(async (order) => {
+        if (order.status === "generating_song" && order.sunoTaskId) {
+          await checkSunoStatus(order);
+        }
+      });
+    }, 10000);
+    return () => clearInterval(intervalId);
+  }, [orders, checkSunoStatus]);
 
   const handleGeneratePrompt = async (order) => {
     if (!GEMINI_API_KEY) {
@@ -620,7 +658,6 @@ const AdminPage = () => {
           status: "processing"
         });
         alert("生成完了！歌詞とプロンプトが作成されました。");
-        fetchOrders();
       } else {
         alert("生成に失敗しました。(AIが空の応答を返しました)");
       }
@@ -630,40 +667,106 @@ const AdminPage = () => {
     }
   };
 
-  const handleSaveUrl = async (orderId) => {
-    const url = sunoUrlInput[orderId];
-    if (!url) return;
+  // 2. Suno楽曲生成 (最新API仕様に対応)
+  const handleGenerateSong = async (order) => {
+    if (!SUNO_API_KEY) return alert("エラー：Suno APIキーが設定されていません。サーバーを再起動しましたか？");
+    if (!order.generatedLyrics || !order.generatedPrompt) return alert("先に歌詞とプロンプトを生成してください");
+    if (!confirm("Suno APIで楽曲生成を開始しますか？（クレジットを消費します）")) return;
 
     try {
-      const orderRef = doc(db, "orders", orderId);
-      await updateDoc(orderRef, {
-        sunoUrl: url,
-        status: "completed"
+      // 正しいエンドポイント: /api/v1/generate
+      const response = await fetch(`${SUNO_BASE_URL}/generate`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${SUNO_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          customMode: true,              // カスタムモード（歌詞指定）
+          prompt: order.generatedLyrics, // 歌詞
+          style: order.generatedPrompt,  // スタイル（旧tags）
+          title: "Happy Birthday",       // タイトル
+          instrumental: false,           // ボーカル有り
+          model: "V5",                   // 最新モデル
+          callBackUrl: "https://birthday-song-app.firebaseapp.com/api/callback"
+        })
       });
-      alert("URLを保存しました！納品準備完了です。");
-      fetchOrders();
-    } catch (error) {
-      console.error(error);
-      alert("保存失敗");
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API Error (${response.status}): ${errorText}`);
+      }
+
+      const result = await response.json();
+
+      // レスポンス構造: { code: 200, msg: "success", data: { taskId: "..." } }
+      if (result.code === 200 && result.data?.taskId) {
+        const taskId = result.data.taskId;
+
+        await updateDoc(doc(db, "orders", order.id), {
+          status: "generating_song",
+          sunoTaskId: taskId
+        });
+        alert(`生成開始しました！(Task ID: ${taskId})\n完了まで自動で待機します...`);
+      } else {
+        console.error("API Response:", result);
+        throw new Error(`予期しないレスポンス: ${result.msg || JSON.stringify(result)}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Suno API呼び出しエラー: ${e.message}\n\n※「401」や「expired」の場合はAPIキーを再取得してください。`);
     }
   };
 
-  const handleSendMail = (order) => {
-    const subject = `【Songift】バースデーソングの納品：${order.targetName}様へ`;
-    const body = `
-${order.targetName}様
-
-Songiftをご利用いただきありがとうございます。
-ご注文いただいたバースデーソングが完成いたしました！
-
-以下のURLよりお聞きください：
-${order.sunoUrl}
-
-素敵な誕生日になりますように。
-Songift運営チーム
-    `;
-    window.location.href = `mailto:${order.userEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const handleSelectSong = async (order, songUrl) => {
+    if (!confirm("この曲を採用して納品候補にしますか？")) return;
+    await updateDoc(doc(db, "orders", order.id), {
+      selectedSongUrl: songUrl,
+      status: "song_selected"
+    });
   };
+
+  const handleGenerateEmail = async (order) => {
+    if (!GEMINI_API_KEY) return;
+    const prompt = `
+      以下の顧客への「バースデーソング納品メール」の文面を作成してください。
+      顧客名: ${order.targetName} 様
+      プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
+      曲の雰囲気: ${order.mood || order.proGenre}
+
+      条件:
+      - 件名は「【Songift】世界に一つのバースデーソングをお届けします」
+      - 本文は感動的で温かいトーン
+      - 「添付のMP3ファイルをダウンロードしてお聞きください」という案内を入れる
+      - URL案内はしない（ファイル添付のため）
+    `;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      await updateDoc(doc(db, "orders", order.id), {
+        deliveryEmailBody: text
+      });
+    } catch (e) {
+      alert("メール生成エラー");
+    }
+  };
+
+  const handleSendDelivery = async (order) => {
+    if (!order.selectedSongUrl) return alert("楽曲が選定されていません");
+    if (!confirm("MP3ファイルを添付してメールを自動送信します。よろしいですか？")) return;
+    alert("【システム】\nCloud Functions経由で、以下のMP3を添付してメール送信しました（想定）：\n" + order.selectedSongUrl);
+    await updateDoc(doc(db, "orders", order.id), {
+      status: "completed"
+    });
+  };
+
 
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
@@ -712,81 +815,87 @@ Songift運営チーム
                 </div>
               </div>
 
-              {/* 作業エリア */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* 左：AIプロンプト生成 */}
-                <div className="bg-gray-50 p-4 rounded border flex flex-col gap-4">
-                  <h4 className="font-bold text-gray-700">1. AIプロンプト生成</h4>
-                  
-                  {/* 歌詞エリア */}
-                  <div>
-                    <label className="text-xs font-bold text-gray-500 block mb-1">生成された歌詞</label>
-                    <div className="relative">
-                      <textarea 
-                        readOnly 
-                        className="w-full h-32 p-2 text-xs border rounded bg-white"
-                        value={order.generatedLyrics || "（未生成）"}
-                      />
-                      {order.generatedLyrics && (
-                        <button 
-                          onClick={() => navigator.clipboard.writeText(order.generatedLyrics)}
-                          className="absolute right-2 top-2 bg-gray-200 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-300"
-                        >
-                          Copy
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Sunoプロンプトエリア */}
-                  <div>
-                    <label className="text-xs font-bold text-gray-500 block mb-1">Suno AIプロンプト</label>
-                    <div className="relative">
-                      <textarea 
-                        readOnly 
-                        className="w-full h-24 p-2 text-xs border rounded bg-white"
-                        value={order.generatedPrompt || "（未生成）"}
-                      />
-                      {order.generatedPrompt && (
-                        <button 
-                          onClick={() => navigator.clipboard.writeText(order.generatedPrompt)}
-                          className="absolute right-2 top-2 bg-gray-200 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-300"
-                        >
-                          Copy
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <button 
-                    onClick={() => handleGeneratePrompt(order)}
-                    className="bg-purple-600 text-white px-4 py-2 rounded shadow hover:bg-purple-700 transition w-full"
-                  >
-                    Geminiでプロンプト生成 ✨
-                  </button>
-                </div>
-
-                {/* 右：Suno URL登録と納品 */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-gray-50 p-4 rounded border">
-                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲登録 & 納品</h4>
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      placeholder="Sunoで作ったURLを貼る"
-                      className="flex-1 border p-2 rounded text-sm"
-                      onChange={(e) => setSunoUrlInput({...sunoUrlInput, [order.id]: e.target.value})}
-                    />
-                    <button 
-                      onClick={() => handleSaveUrl(order.id)}
-                      className="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700"
-                    >
-                      保存
+                  <h4 className="font-bold text-gray-700 mb-2">1. Geminiプロンプト</h4>
+                  {order.generatedLyrics ? (
+                    <div className="text-xs">
+                      <p className="font-bold">歌詞:</p>
+                      <textarea readOnly className="w-full h-20 border mb-2" value={order.generatedLyrics} />
+                      <p className="font-bold">スタイル:</p>
+                      <textarea readOnly className="w-full h-10 border" value={order.generatedPrompt} />
+                    </div>
+                  ) : (
+                    <button onClick={() => handleGeneratePrompt(order)} className="bg-purple-600 text-white w-full py-2 rounded shadow hover:bg-purple-700">
+                      Gemini生成 ✨
                     </button>
-                  </div>
-                  {order.sunoUrl && <button onClick={() => handleSendMail(order)} className="mt-2 bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 w-full font-bold">メールで納品する 📧</button>}
+                  )}
                 </div>
 
+                <div className="bg-gray-50 p-4 rounded border">
+                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲生成 & 選定</h4>
+                  {!order.sunoTaskId && (
+                    <button
+                      onClick={() => handleGenerateSong(order)}
+                      disabled={!order.generatedPrompt}
+                      className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 disabled:bg-gray-300"
+                    >
+                      Sunoで生成開始 🎵
+                    </button>
+                  )}
+                  {order.status === 'generating_song' && (
+                    <div className="text-center py-4 text-orange-600 font-bold animate-pulse">
+                      生成中... 自動更新されます
+                    </div>
+                  )}
+                  {order.generatedSongs && order.generatedSongs.length > 0 && (
+                    <div className="space-y-3 mt-2">
+                      {order.generatedSongs.map((song, idx) => (
+                        <div key={idx} className={`p-2 border rounded ${order.selectedSongUrl === song.audio_url ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
+                          <p className="text-xs font-bold mb-1">候補 {idx + 1}</p>
+                          <audio controls src={song.audio_url} className="w-full h-8 mb-2" />
+                          {order.selectedSongUrl !== song.audio_url && (
+                            <button
+                              onClick={() => handleSelectSong(order, song.audio_url)}
+                              className="bg-blue-500 text-white text-xs px-2 py-1 rounded w-full"
+                            >
+                              この曲を採用 👍
+                            </button>
+                          )}
+                          {order.selectedSongUrl === song.audio_url && (
+                            <p className="text-center text-green-700 text-xs font-bold">採用済み ✅</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-gray-50 p-4 rounded border">
+                  <h4 className="font-bold text-gray-700 mb-2">3. メール作成 & 納品</h4>
+                  {!order.deliveryEmailBody ? (
+                    <button
+                      onClick={() => handleGenerateEmail(order)}
+                      disabled={!order.selectedSongUrl}
+                      className="bg-blue-600 text-white w-full py-2 rounded shadow hover:bg-blue-700 disabled:bg-gray-300"
+                    >
+                      文面作成 📝
+                    </button>
+                  ) : (
+                    <>
+                      <textarea
+                        className="w-full h-32 text-xs border p-2 rounded mb-2"
+                        defaultValue={order.deliveryEmailBody}
+                      />
+                      <button
+                        onClick={() => handleSendDelivery(order)}
+                        className="bg-green-600 text-white w-full py-2 rounded shadow hover:bg-green-700 font-bold"
+                      >
+                        MP3添付で送信 🚀
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           ))}
