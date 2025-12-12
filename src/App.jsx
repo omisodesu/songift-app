@@ -41,6 +41,7 @@ const IS_ADMIN_CHECK_ENABLED = import.meta.env.VITE_ENABLE_ADMIN_CHECK !== 'fals
 // ★プレビュー環境では警告が出ますが、ローカル環境(Vite)ではこの書き方が必須です
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
+const SLACK_WEBHOOK_URL = import.meta.env.VITE_SLACK_WEBHOOK_URL;
 
 // ---------------------------
 // 定数・データ
@@ -249,6 +250,7 @@ const OrderPage = ({ user }) => {
     }
 
     try {
+      // Firestoreに注文を保存
       await addDoc(collection(db, "orders"), {
         userId: user.uid,
         userEmail: user.email,
@@ -257,6 +259,33 @@ const OrderPage = ({ user }) => {
         status: "waiting",
         createdAt: serverTimestamp(),
       });
+
+      // Slack通知を送信（Cloud Functions経由）
+      console.log("📤 Slack通知をCloud Functions経由で送信中...");
+      try {
+        const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/sendSlackNotification";
+
+        const response = await fetch(functionUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            plan: plan,
+            formData: finalFormData,
+            userEmail: user.email
+          })
+        });
+
+        if (response.ok) {
+          console.log("✅ Slack通知送信成功");
+        } else {
+          const errorData = await response.json();
+          console.error("❌ Slack通知送信失敗:", response.status, errorData);
+        }
+      } catch (slackError) {
+        console.error("❌ Slack通知エラー:", slackError);
+        // Slack送信失敗でもユーザーには通知しない（注文は成功しているため）
+      }
+
       alert("注文を受け付けました！完成をお待ちください。");
       navigate('/');
     } catch (error) {
@@ -431,6 +460,11 @@ const AdminPage = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // 編集機能用の状態管理
+  const [editingOrderId, setEditingOrderId] = useState(null);
+  const [editedLyrics, setEditedLyrics] = useState('');
+  const [editedPrompt, setEditedPrompt] = useState('');
+
   // APIの設定 (修正: sunoapi.orgのBase URL)
   const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -501,6 +535,35 @@ const AdminPage = () => {
     }, 10000);
     return () => clearInterval(intervalId);
   }, [orders, checkSunoStatus]);
+
+  // 編集機能の関数
+  const handleEditStart = (order) => {
+    setEditingOrderId(order.id);
+    setEditedLyrics(order.generatedLyrics || '');
+    setEditedPrompt(order.generatedPrompt || '');
+  };
+
+  const handleEditCancel = () => {
+    setEditingOrderId(null);
+    setEditedLyrics('');
+    setEditedPrompt('');
+  };
+
+  const handleEditSave = async (orderId) => {
+    try {
+      await updateDoc(doc(db, "orders", orderId), {
+        generatedLyrics: editedLyrics,
+        generatedPrompt: editedPrompt,
+      });
+      setEditingOrderId(null);
+      setEditedLyrics('');
+      setEditedPrompt('');
+      alert("編集内容を保存しました！");
+    } catch (error) {
+      console.error("保存エラー:", error);
+      alert("保存に失敗しました。");
+    }
+  };
 
   const handleGeneratePrompt = async (order) => {
     if (!GEMINI_API_KEY) {
@@ -760,11 +823,56 @@ const AdminPage = () => {
 
   const handleSendDelivery = async (order) => {
     if (!order.selectedSongUrl) return alert("楽曲が選定されていません");
+    if (!order.deliveryEmailBody) return alert("メール文面が生成されていません");
     if (!confirm("MP3ファイルを添付してメールを自動送信します。よろしいですか？")) return;
-    alert("【システム】\nCloud Functions経由で、以下のMP3を添付してメール送信しました（想定）：\n" + order.selectedSongUrl);
-    await updateDoc(doc(db, "orders", order.id), {
-      status: "completed"
-    });
+
+    try {
+      // ステータスを送信中に更新
+      await updateDoc(doc(db, "orders", order.id), {
+        deliveryStatus: "sending"
+      });
+
+      // Cloud Functionを呼び出し
+      const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/sendBirthdaySongEmail";
+
+      const response = await fetch(functionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          orderId: order.id,
+          recipientEmail: order.userEmail,
+          recipientName: order.targetName,
+          mp3Url: order.selectedSongUrl,
+          emailBody: order.deliveryEmailBody,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "メール送信に失敗しました");
+      }
+
+      // 成功時のステータス更新
+      await updateDoc(doc(db, "orders", order.id), {
+        status: "completed",
+        deliveryStatus: "sent",
+      });
+
+      alert("✅ メール送信が完了しました！\n\n送信先: " + order.userEmail);
+    } catch (error) {
+      console.error("メール送信エラー:", error);
+
+      // エラー時のステータス更新
+      await updateDoc(doc(db, "orders", order.id), {
+        deliveryStatus: "error",
+        deliveryError: error.message,
+      });
+
+      alert("❌ メール送信に失敗しました。\n\nエラー: " + error.message + "\n\nCloud Functionsのデプロイとシークレット設定を確認してください。");
+    }
   };
 
 
@@ -820,10 +928,43 @@ const AdminPage = () => {
                   <h4 className="font-bold text-gray-700 mb-2">1. Geminiプロンプト</h4>
                   {order.generatedLyrics ? (
                     <div className="text-xs">
-                      <p className="font-bold">歌詞:</p>
-                      <textarea readOnly className="w-full h-20 border mb-2" value={order.generatedLyrics} />
-                      <p className="font-bold">スタイル:</p>
-                      <textarea readOnly className="w-full h-10 border" value={order.generatedPrompt} />
+                      <p className="font-bold mb-1">歌詞:</p>
+                      <textarea
+                        readOnly={editingOrderId !== order.id}
+                        className={`w-full h-40 border mb-2 p-2 text-sm ${editingOrderId === order.id ? 'bg-white' : 'bg-gray-100'}`}
+                        value={editingOrderId === order.id ? editedLyrics : order.generatedLyrics}
+                        onChange={(e) => setEditedLyrics(e.target.value)}
+                      />
+                      <p className="font-bold mb-1">スタイル:</p>
+                      <textarea
+                        readOnly={editingOrderId !== order.id}
+                        className={`w-full h-24 border mb-2 p-2 text-sm ${editingOrderId === order.id ? 'bg-white' : 'bg-gray-100'}`}
+                        value={editingOrderId === order.id ? editedPrompt : order.generatedPrompt}
+                        onChange={(e) => setEditedPrompt(e.target.value)}
+                      />
+                      {editingOrderId === order.id ? (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleEditSave(order.id)}
+                            className="flex-1 bg-green-600 text-white py-2 rounded shadow hover:bg-green-700"
+                          >
+                            保存
+                          </button>
+                          <button
+                            onClick={handleEditCancel}
+                            className="flex-1 bg-gray-500 text-white py-2 rounded shadow hover:bg-gray-600"
+                          >
+                            キャンセル
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleEditStart(order)}
+                          className="w-full bg-blue-600 text-white py-2 rounded shadow hover:bg-blue-700"
+                        >
+                          編集
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <button onClick={() => handleGeneratePrompt(order)} className="bg-purple-600 text-white w-full py-2 rounded shadow hover:bg-purple-700">
@@ -834,19 +975,18 @@ const AdminPage = () => {
 
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-bold text-gray-700 mb-2">2. 楽曲生成 & 選定</h4>
-                  {!order.sunoTaskId && (
-                    <button
-                      onClick={() => handleGenerateSong(order)}
-                      disabled={!order.generatedPrompt}
-                      className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 disabled:bg-gray-300"
-                    >
-                      Sunoで生成開始 🎵
-                    </button>
-                  )}
-                  {order.status === 'generating_song' && (
+                  {order.status === 'generating_song' ? (
                     <div className="text-center py-4 text-orange-600 font-bold animate-pulse">
                       生成中... 自動更新されます
                     </div>
+                  ) : (
+                    <button
+                      onClick={() => handleGenerateSong(order)}
+                      disabled={!order.generatedPrompt}
+                      className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 disabled:bg-gray-300 mb-2"
+                    >
+                      {order.sunoTaskId ? 'Sunoで再生成 🔄' : 'Sunoで生成開始 🎵'}
+                    </button>
                   )}
                   {order.generatedSongs && order.generatedSongs.length > 0 && (
                     <div className="space-y-3 mt-2">
