@@ -140,7 +140,9 @@ const LoginPage = () => {
       navigate('/order');
     } catch (error) {
       console.error("ログインエラー:", error);
-      alert("ログインに失敗しました。");
+      const code = error?.code || '(no code)';
+      const message = error?.message || String(error);
+      alert(`ログインに失敗しました。\ncode: ${code}\nmessage: ${message}`);
     }
   };
 
