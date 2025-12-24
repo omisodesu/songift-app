@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useSearchParams, Navigate } from 'react-router-dom';
 // Firebase関連
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -29,15 +29,8 @@ const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
 
 // ---------------------------
-// 管理者リストの定義（複数対応）
+// API Keys（未使用だが既存コードとの互換性のため残す）
 // ---------------------------
-const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAIL || "")
-  .split(',')
-  .map(email => email.trim());
-
-// 管理者チェック機能が有効かどうか（デフォルトは有効）
-const IS_ADMIN_CHECK_ENABLED = import.meta.env.VITE_ENABLE_ADMIN_CHECK !== 'false';
-
 // ★プレビュー環境では警告が出ますが、ローカル環境(Vite)ではこの書き方が必須です
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
@@ -124,50 +117,22 @@ const TopPage = () => (
       想いを込めた、世界に一つのバースデーソングを。<br />
       あなたの大切な人へ贈りませんか？
     </p>
-    <Link to="/login" className="bg-blue-500 text-white px-8 py-4 rounded-full font-bold text-xl hover:bg-blue-600 transition shadow-lg">
+    <Link to="/order" className="bg-blue-500 text-white px-8 py-4 rounded-full font-bold text-xl hover:bg-blue-600 transition shadow-lg">
       作成を申し込む
     </Link>
   </div>
 );
 
-// 2. ログインページ
-const LoginPage = () => {
-  const navigate = useNavigate();
-
-  const handleGoogleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-      navigate('/order');
-    } catch (error) {
-      console.error("ログインエラー:", error);
-      const code = error?.code || '(no code)';
-      const message = error?.message || String(error);
-      alert(`ログインに失敗しました。\ncode: ${code}\nmessage: ${message}`);
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-10 text-center bg-gray-50">
-      <h2 className="text-2xl font-bold mb-6">ログイン</h2>
-      <button 
-        onClick={handleGoogleLogin}
-        className="bg-white border border-gray-300 text-gray-700 font-bold py-3 px-6 rounded shadow hover:bg-gray-100 transition"
-      >
-        <span className="text-blue-500 mr-2">G</span> Googleでログイン
-      </button>
-      <Link to="/" className="text-blue-500 text-sm underline mt-6 block">戻る</Link>
-    </div>
-  );
-};
-
-// 3. 注文フォームページ
-const OrderPage = ({ user }) => {
+// 2. 注文フォームページ
+const OrderPage = ({ user = null }) => {
   const navigate = useNavigate();
   const [plan, setPlan] = useState('simple');
   const [loading, setLoading] = useState(false);
-  const [otherInstrument, setOtherInstrument] = useState(''); 
+  const [otherInstrument, setOtherInstrument] = useState('');
   const [nameError, setNameError] = useState('');
-  
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState('');
+
   const [formData, setFormData] = useState({
     targetName: '',
     targetColor: '',
@@ -232,8 +197,18 @@ const OrderPage = ({ user }) => {
     });
   };
 
+  const validateEmail = (email) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // バリデーション
+    if (!validateEmail(email)) {
+      setEmailError('有効なメールアドレスを入力してください');
+      return;
+    }
 
     if (nameError || !formData.targetName) {
       alert("お名前の入力を確認してください。");
@@ -252,47 +227,31 @@ const OrderPage = ({ user }) => {
     }
 
     try {
-      // Firestoreに注文を保存
-      await addDoc(collection(db, "orders"), {
-        userId: user.uid,
-        userEmail: user.email,
-        plan: plan,
-        ...finalFormData,
-        status: "waiting",
-        createdAt: serverTimestamp(),
+      // Cloud Functions createOrder を呼び出し
+      const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/createOrder";
+
+      const response = await fetch(functionUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan: plan,
+          formData: finalFormData,
+          email: email
+        })
       });
 
-      // Slack通知を送信（Cloud Functions経由）
-      console.log("📤 Slack通知をCloud Functions経由で送信中...");
-      try {
-        const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/sendSlackNotification";
+      const result = await response.json();
 
-        const response = await fetch(functionUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            plan: plan,
-            formData: finalFormData,
-            userEmail: user.email
-          })
-        });
-
-        if (response.ok) {
-          console.log("✅ Slack通知送信成功");
-        } else {
-          const errorData = await response.json();
-          console.error("❌ Slack通知送信失敗:", response.status, errorData);
-        }
-      } catch (slackError) {
-        console.error("❌ Slack通知エラー:", slackError);
-        // Slack送信失敗でもユーザーには通知しない（注文は成功しているため）
+      if (!response.ok) {
+        throw new Error(result.error || "注文に失敗しました");
       }
 
-      alert("注文を受け付けました！完成をお待ちください。");
+      // 成功メッセージ
+      alert(`注文を受け付けました！\n\n${email} 宛に確認メールを送信しました。\nメールに記載されたURLから進捗を確認できます。`);
       navigate('/');
     } catch (error) {
       console.error("注文エラー:", error);
-      alert("送信に失敗しました。");
+      alert(`送信に失敗しました: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -309,7 +268,33 @@ const OrderPage = ({ user }) => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
-          
+
+          {/* メールアドレス入力（新規追加） */}
+          <div className="bg-blue-50 p-5 rounded-lg border border-blue-100">
+            <label className="block font-bold text-gray-800 mb-2">
+              📧 メールアドレス <span className="text-red-500">*</span>
+            </label>
+            <p className="text-sm text-gray-500 mb-2">
+              注文確認と完成通知をお送りします
+            </p>
+            <input
+              required
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (!validateEmail(e.target.value)) {
+                  setEmailError('有効なメールアドレスを入力してください');
+                } else {
+                  setEmailError('');
+                }
+              }}
+              className={`w-full border p-3 rounded ${emailError ? 'border-red-500' : ''}`}
+              placeholder="example@email.com"
+            />
+            {emailError && <p className="text-xs text-red-500 mt-1 font-bold">{emailError}</p>}
+          </div>
+
           {/* ========== 簡単モード ========== */}
           {plan === 'simple' && (
             <>
@@ -457,8 +442,217 @@ const OrderPage = ({ user }) => {
   );
 };
 
-// 4. 管理者ダッシュボード
-const AdminPage = () => {
+// 4. 注文確認ページ（トークン認証）
+const OrderConfirmPage = () => {
+  const { orderId } = useParams();
+  const [searchParams] = useSearchParams();
+  const token = searchParams.get('t');
+
+  const [order, setOrder] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const fetchOrder = async () => {
+      if (!orderId || !token) {
+        setError('無効なURLです');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/getOrderByToken";
+
+        const response = await fetch(functionUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId, token })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+          throw new Error(result.error || "注文情報の取得に失敗しました");
+        }
+
+        setOrder(result.order);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchOrder();
+  }, [orderId, token]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">読み込み中...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white p-8 rounded-xl shadow text-center">
+          <div className="text-red-500 text-6xl mb-4">⚠️</div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">エラー</h2>
+          <p className="text-gray-600 mb-6">{error}</p>
+          <Link to="/" className="inline-block bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600">
+            トップページへ
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const getStatusDisplay = (status) => {
+    switch (status) {
+      case 'completed':
+        return { text: '完成', color: 'bg-green-100 text-green-800', progress: 100 };
+      case 'song_selected':
+        return { text: '楽曲選定完了', color: 'bg-blue-100 text-blue-800', progress: 90 };
+      case 'song_generated':
+        return { text: '楽曲確認中', color: 'bg-blue-100 text-blue-800', progress: 80 };
+      case 'generating_song':
+        return { text: '楽曲生成中', color: 'bg-yellow-100 text-yellow-800', progress: 60 };
+      case 'processing':
+        return { text: '制作中', color: 'bg-yellow-100 text-yellow-800', progress: 40 };
+      default:
+        return { text: '受付完了', color: 'bg-gray-100 text-gray-800', progress: 20 };
+    }
+  };
+
+  const statusInfo = getStatusDisplay(order.status);
+
+  return (
+    <div className="min-h-screen bg-gray-50 py-10 px-4">
+      <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow">
+        <h2 className="text-3xl font-bold text-center mb-6 text-blue-600">
+          {order.targetName}様のバースデーソング
+        </h2>
+
+        {/* ステータス表示 */}
+        <div className="mb-8 p-6 bg-blue-50 rounded-lg">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-sm text-gray-600">ステータス</span>
+            <span className={`px-4 py-2 rounded-full text-sm font-bold ${statusInfo.color}`}>
+              {statusInfo.text}
+            </span>
+          </div>
+
+          {/* プログレスバー */}
+          <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+            <div
+              className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+              style={{ width: `${statusInfo.progress}%` }}
+            ></div>
+          </div>
+
+          <p className="text-sm text-gray-600 mt-2">
+            {order.status === 'completed'
+              ? '楽曲が完成しました！下記から聴けます。'
+              : order.status === 'processing' || order.status === 'generating_song'
+              ? '現在、制作中です。完成までお待ちください。'
+              : '注文を受け付けました。制作開始までしばらくお待ちください。'}
+          </p>
+        </div>
+
+        {/* 注文詳細 */}
+        <div className="mb-8 p-6 bg-gray-50 rounded-lg">
+          <h3 className="font-bold text-gray-800 mb-4">注文内容</h3>
+          <dl className="space-y-2">
+            <div className="flex justify-between">
+              <dt className="text-gray-600">プラン</dt>
+              <dd className="font-bold">{order.plan === 'simple' ? '魔法診断モード' : 'プロモード'}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-gray-600">お名前</dt>
+              <dd className="font-bold">{order.targetName}</dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-gray-600">注文日</dt>
+              <dd>{order.createdAt?.seconds ? new Date(order.createdAt.seconds * 1000).toLocaleString('ja-JP') : '不明'}</dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* 楽曲プレイヤー（完成時のみ） */}
+        {order.status === 'completed' && order.selectedSongUrl && (
+          <div className="mb-8 p-6 bg-green-50 rounded-lg border-2 border-green-200">
+            <h3 className="font-bold text-green-800 mb-4 text-xl">🎉 完成しました！</h3>
+            <audio controls src={order.selectedSongUrl} className="w-full mb-4" />
+            <a
+              href={order.selectedSongUrl}
+              download={`birthday_song_${order.targetName}.mp3`}
+              className="block w-full text-center bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 font-bold"
+            >
+              ダウンロード
+            </a>
+          </div>
+        )}
+
+        <div className="text-center">
+          <Link to="/" className="text-blue-500 underline">トップページへ戻る</Link>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// 5. 管理者ログインページ
+const AdminLoginPage = () => {
+  const navigate = useNavigate();
+
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const user = result.user;
+
+      // 管理者チェック
+      const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
+      const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
+
+      if (!adminEmails.includes(user.email)) {
+        await signOut(auth);
+        alert('管理者権限がありません');
+        return;
+      }
+
+      navigate('/admin');
+    } catch (error) {
+      console.error("ログインエラー:", error);
+      const code = error?.code || '(no code)';
+      const message = error?.message || String(error);
+      alert(`ログインに失敗しました。\ncode: ${code}\nmessage: ${message}`);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-10 text-center bg-gray-50">
+      <h2 className="text-2xl font-bold mb-6">管理者ログイン</h2>
+      <button
+        onClick={handleGoogleLogin}
+        className="bg-white border border-gray-300 text-gray-700 font-bold py-3 px-6 rounded shadow hover:bg-gray-100 transition"
+      >
+        <span className="text-blue-500 mr-2">G</span> Googleでログイン
+      </button>
+      <Link to="/" className="text-blue-500 text-sm underline mt-6 block">
+        トップページへ
+      </Link>
+    </div>
+  );
+};
+
+// 6. 管理者ダッシュボード
+const AdminPage = ({ user }) => {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -471,6 +665,17 @@ const AdminPage = () => {
   const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
   const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
+
+  // 認証チェック
+  useEffect(() => {
+    const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
+    const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
+
+    if (!user || !adminEmails.includes(user.email)) {
+      alert('管理者権限が必要です');
+      navigate('/admin/login');
+    }
+  }, [user, navigate]);
 
   useEffect(() => {
     const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
@@ -1067,20 +1272,26 @@ function App() {
     alert("ログアウトしました");
   };
 
+  // 管理者判定ヘルパー
+  const isAdmin = (user) => {
+    if (!user) return false;
+    const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
+    const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
+    return adminEmails.includes(user.email);
+  };
+
   if (loading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
   return (
     <BrowserRouter>
-      {user && (
+      {/* ヘッダーは管理者のみ表示 */}
+      {user && isAdmin(user) && (
         <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
           <div className="flex items-center gap-6">
             <Link to="/" className="font-bold text-blue-600 text-xl">Songift</Link>
-            {/* スイッチON かつ 管理者の場合のみ表示、または スイッチOFFなら全員に表示 */}
-            {(!IS_ADMIN_CHECK_ENABLED || ADMIN_EMAILS.includes(user.email)) && (
-              <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
-                管理者画面へ
-              </Link>
-            )}
+            <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
+              管理者画面へ
+            </Link>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-gray-600">{user.displayName}さん</span>
@@ -1090,11 +1301,21 @@ function App() {
       )}
 
       <Routes>
-        <Route path="/" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <TopPage />} />
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/order" element={user ? <div className="pt-16"><OrderPage user={user} /></div> : <LoginPage />} />
-        {/* 管理者ページのルート */}
-        <Route path="/admin" element={user ? <div className="pt-16"><AdminPage /></div> : <LoginPage />} />
+        {/* 一般ユーザー向けルート */}
+        <Route path="/" element={<TopPage />} />
+        <Route path="/order" element={<OrderPage />} />
+        <Route path="/o/:orderId" element={<OrderConfirmPage />} />
+
+        {/* 管理者向けルート */}
+        <Route path="/admin/login" element={<AdminLoginPage />} />
+        <Route
+          path="/admin"
+          element={
+            user && isAdmin(user)
+              ? <div className="pt-16"><AdminPage user={user} /></div>
+              : <Navigate to="/admin/login" />
+          }
+        />
       </Routes>
     </BrowserRouter>
   );

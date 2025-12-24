@@ -2,8 +2,198 @@ const {onRequest} = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
 const axios = require("axios");
+const crypto = require("crypto");
 
 admin.initializeApp();
+
+/**
+ * レート制限チェック（Firestoreベース）
+ */
+async function checkRateLimit(ip, maxRequests, windowMs) {
+  const rateLimitRef = admin.firestore().collection("rate_limits").doc(ip);
+  const doc = await rateLimitRef.get();
+
+  const now = Date.now();
+
+  if (doc.exists) {
+    const {count, lastAccess} = doc.data();
+
+    // 制限時間内かチェック
+    if (now - lastAccess < windowMs) {
+      if (count >= maxRequests) {
+        return {allowed: false, remaining: 0};
+      }
+      // カウント増加
+      await rateLimitRef.update({
+        count: count + 1,
+        lastAccess: now,
+      });
+      return {allowed: true, remaining: maxRequests - count - 1};
+    } else {
+      // 時間窓リセット
+      await rateLimitRef.set({
+        count: 1,
+        lastAccess: now,
+      });
+      return {allowed: true, remaining: maxRequests - 1};
+    }
+  } else {
+    // 初回アクセス
+    await rateLimitRef.set({
+      count: 1,
+      lastAccess: now,
+    });
+    return {allowed: true, remaining: maxRequests - 1};
+  }
+}
+
+/**
+ * 注文作成 + トークン生成 + メール送信
+ *
+ * リクエストボディ:
+ * {
+ *   plan: "simple" | "pro",
+ *   formData: { targetName, targetColor, ... },
+ *   email: "user@example.com"
+ * }
+ */
+exports.createOrder = onRequest({
+  cors: true,
+  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL"],
+}, async (req, res) => {
+  // CORSヘッダー設定
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {plan, formData, email} = req.body;
+
+    // パラメータ検証
+    if (!plan || !formData || !email) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["plan", "formData", "email"],
+      });
+      return;
+    }
+
+    // メールアドレスのフォーマット検証
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      res.status(400).json({
+        error: "有効なメールアドレスを入力してください",
+      });
+      return;
+    }
+
+    // レート制限チェック（1分間に3回まで）
+    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    const rateLimit = await checkRateLimit(ip, 3, 60000);
+
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        error: "リクエストが多すぎます。しばらくしてから再試行してください。",
+      });
+      return;
+    }
+
+    console.log(`Creating order for: ${email}, plan: ${plan}`);
+
+    // トークン生成（32バイト = 64文字のhex）
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    // トークン有効期限（30日後）
+    const tokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+    // Firestoreに注文を保存
+    const orderRef = await admin.firestore().collection("orders").add({
+      userId: null, // 一般ユーザーはnull
+      userEmail: email,
+      plan: plan,
+      ...formData,
+      status: "waiting",
+      tokenHash: tokenHash,
+      tokenCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      tokenExpiresAt: tokenExpiresAt,
+      tokenAccessCount: 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const orderId = orderRef.id;
+    console.log(`Order created: ${orderId}`);
+
+    // 専用URL生成
+    const orderUrl = `https://birthday-song-app.web.app/o/${orderId}?t=${token}`;
+
+    // メール本文作成
+    const emailBody = `${formData.targetName}様のバースデーソング作成を承りました。
+
+以下のURLから進捗状況を確認できます：
+${orderUrl}
+
+※このURLは30日間有効です。
+※完成次第、こちらのメールアドレスにお知らせします。
+
+---
+Songift - 世界に一つのバースデーソング`;
+
+    // SendGrid でメール送信
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    if (!sendgridApiKey) {
+      throw new Error("SENDGRID_API_KEY is not configured");
+    }
+
+    sgMail.setApiKey(sendgridApiKey.trim());
+
+    const msg = {
+      to: email,
+      from: {
+        email: "fukui@gadandan.co.jp",
+        name: "Songift",
+      },
+      subject: `【Songift】ご注文を受け付けました - ${formData.targetName}様`,
+      text: emailBody,
+      html: emailBody.replace(/\n/g, "<br>"),
+    };
+
+    await sgMail.send(msg);
+    console.log(`Confirmation email sent to: ${email}`);
+
+    // Slack通知送信
+    const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
+    if (slackWebhookUrl) {
+      const slackMessage = plan === "simple"
+        ? `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`
+        : `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*メール:* ${email}`;
+
+      await axios.post(slackWebhookUrl, {
+        text: slackMessage,
+      });
+
+      console.log("Slack notification sent");
+    }
+
+    res.status(200).json({
+      success: true,
+      orderId: orderId,
+      message: "注文を受け付けました。メールをご確認ください。",
+    });
+  } catch (error) {
+    console.error("Error creating order:", error);
+
+    res.status(500).json({
+      error: "注文の作成に失敗しました",
+      message: error.message,
+    });
+  }
+});
 
 /**
  * Slack通知送信
@@ -187,6 +377,115 @@ exports.sendBirthdaySongEmail = onRequest({
 
     res.status(500).json({
       error: "メール送信に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * トークン認証で注文情報を取得
+ *
+ * リクエストボディ:
+ * {
+ *   orderId: "注文ID",
+ *   token: "64文字のhex文字列"
+ * }
+ */
+exports.getOrderByToken = onRequest({
+  cors: true,
+}, async (req, res) => {
+  // CORSヘッダー設定
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {orderId, token} = req.body;
+
+    // パラメータ検証
+    if (!orderId || !token) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["orderId", "token"],
+      });
+      return;
+    }
+
+    // レート制限チェック（1分間に10回まで）
+    const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+    const rateLimitKey = `${orderId}_${ip}`;
+    const rateLimit = await checkRateLimit(rateLimitKey, 10, 60000);
+
+    if (!rateLimit.allowed) {
+      res.status(429).json({
+        error: "アクセスが多すぎます。しばらくしてから再試行してください。",
+      });
+      return;
+    }
+
+    // トークンハッシュ計算
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    // Firestoreから注文を取得
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      res.status(404).json({
+        error: "注文が見つかりません",
+      });
+      return;
+    }
+
+    const order = orderDoc.data();
+
+    // トークンハッシュ照合
+    if (order.tokenHash !== tokenHash) {
+      res.status(403).json({
+        error: "無効なトークンです",
+      });
+      return;
+    }
+
+    // 有効期限チェック
+    if (order.tokenExpiresAt && order.tokenExpiresAt.toDate() < new Date()) {
+      res.status(403).json({
+        error: "トークンの有効期限が切れています",
+      });
+      return;
+    }
+
+    // アクセスカウント更新（オプション）
+    await orderDoc.ref.update({
+      tokenAccessCount: admin.firestore.FieldValue.increment(1),
+      lastTokenAccessAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 必要最小限のデータを返す（管理情報は除外）
+    const safeOrder = {
+      id: orderId,
+      plan: order.plan,
+      targetName: order.targetName,
+      status: order.status,
+      createdAt: order.createdAt,
+      // 完成時のみ曲URLを含める
+      selectedSongUrl: order.status === "completed" ? order.selectedSongUrl : null,
+      generatedLyrics: order.status === "completed" || order.status === "song_generated" || order.status === "song_selected" ? order.generatedLyrics : null,
+    };
+
+    res.status(200).json({
+      success: true,
+      order: safeOrder,
+    });
+  } catch (error) {
+    console.error("Error getting order by token:", error);
+
+    res.status(500).json({
+      error: "注文情報の取得に失敗しました",
       message: error.message,
     });
   }
