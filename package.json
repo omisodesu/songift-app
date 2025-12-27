@@ -5,7 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:stg": "vite --mode stg",
+    "dev:prod": "vite --mode production",
     "build": "vite build",
+    "build:stg": "vite build --mode stg",
+    "build:prod": "vite build --mode production",
+    "deploy:stg": "npm run build:stg && firebase use stg && firebase deploy --only hosting",
+    "deploy:prod": "npm run build:prod && firebase use prod && firebase deploy --only hosting",
     "lint": "eslint .",
     "preview": "vite preview"
   },

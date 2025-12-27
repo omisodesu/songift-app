@@ -188,26 +188,42 @@ firebase deploy --only functions
 - メール件名: \`[STG]\` プレフィックスが付与
 - Slack通知: 完全スキップ
 
-**デプロイコマンド（一連の流れ）:**
+**デプロイコマンド（すべて自動化）:**
+
+\`\`\`bash
+# STG環境にビルド＆デプロイ（一発コマンド）
+npm run deploy:stg
+\`\`\`
+
+**または手動で実行する場合:**
 
 \`\`\`bash
 # 1. STG向けビルド（.env.stg を使用）
-npm run build -- --mode stg
+npm run build:stg
 
-# 2. STGプロジェクトに切り替え
-firebase use birthday-song-app-stg
-
-# 3. Hostingのみデプロイ
-firebase deploy --only hosting
-
-# または、Functions + Hosting を同時デプロイする場合
-# firebase deploy
+# 2. STGプロジェクトに切り替えてデプロイ
+firebase use stg && firebase deploy --only hosting:birthday-song-app-stg
 \`\`\`
 
 **確認方法:**
-- https://birthday-song-app-stg.web.app/ にアクセス
-- ブラウザのNetwork タブで \`us-central1-birthday-song-app-stg.cloudfunctions.net\` にリクエストが飛ぶことを確認
-- 注文テストでメールがテストアドレスに届き、件名に \`[STG]\` が付いていることを確認
+
+⚠️ **重要**: デプロイ後は必ずブラウザのキャッシュをクリアしてください！
+
+1. https://birthday-song-app-stg.web.app/ にアクセス
+2. **ハードリフレッシュ**を実行:
+   - Mac: `Cmd + Shift + R`
+   - Windows: `Ctrl + Shift + R`
+3. ブラウザの開発者ツール（F12）を開く
+4. **Consoleタブ**で以下のログを確認:
+   ```
+   [Firebase] Initializing with projectId: birthday-song-app-stg
+   ✅ 環境チェックOK: STG環境として正しく動作しています
+   ```
+5. **Networkタブ**を開き、ページをリロード
+6. `identitytoolkit` へのリクエストを探し、Request URL の `key=` パラメータを確認:
+   - ✅ 正しい: `key=AIzaSyDCg1...` (STG用APIキー)
+   - ❌ 間違い: `key=AIzaSyBQ0E...` (PROD用APIキー) → キャッシュクリアが必要
+7. `/admin/login` でGoogleログインが成功することを確認
 
 ---
 
@@ -218,34 +234,58 @@ firebase deploy --only hosting
 - メール送信先: ユーザーが入力した実際のメールアドレス
 - Slack通知: 有効（本番用Slackチャンネルに通知）
 
-**デプロイコマンド（一連の流れ）:**
+**デプロイコマンド（すべて自動化）:**
 
 \`\`\`bash
-# 1. PROD向けビルド（.env を使用）
-npm run build
+# PROD環境にビルド＆デプロイ（一発コマンド）
+npm run deploy:prod
+\`\`\`
 
-# 2. PRODプロジェクトに切り替え
-firebase use birthday-song-app
+**または手動で実行する場合:**
 
-# 3. Hostingのみデプロイ
-firebase deploy --only hosting
+\`\`\`bash
+# 1. PROD向けビルド（.env.production を使用）
+npm run build:prod
 
-# または、Functions + Hosting を同時デプロイする場合
-# firebase deploy
+# 2. PRODプロジェクトに切り替えてデプロイ
+firebase use prod && firebase deploy --only hosting:birthday-song-app
 \`\`\`
 
 **確認方法:**
-- https://birthday-song-app.web.app/ にアクセス
-- ブラウザのNetwork タブで \`us-central1-birthday-song-app.cloudfunctions.net\` にリクエストが飛ぶことを確認
-- 本番用Slackチャンネルに通知が届くことを確認
+
+⚠️ **重要**: デプロイ後は必ずブラウザのキャッシュをクリアしてください！
+
+1. https://birthday-song-app.web.app/ にアクセス
+2. **ハードリフレッシュ**を実行:
+   - Mac: `Cmd + Shift + R`
+   - Windows: `Ctrl + Shift + R`
+3. ブラウザの開発者ツール（F12）を開く
+4. **Consoleタブ**で以下のログを確認:
+   ```
+   [Firebase] Initializing with projectId: birthday-song-app
+   ✅ 環境チェックOK: PROD環境として正しく動作しています
+   ```
+5. **Networkタブ**を開き、ページをリロード
+6. `identitytoolkit` へのリクエストを探し、Request URL の `key=` パラメータを確認:
+   - ✅ 正しい: `key=AIzaSyBQ0E...` (PROD用APIキー)
+   - ❌ 間違い: `key=AIzaSyDCg1...` (STG用APIキー) → キャッシュクリアが必要
+7. 本番用Slackチャンネルに通知が届くことを確認
 
 ---
 
 #### 4.3 デプロイ前のチェックリスト
 
+**🔒 重要: STG/PROD混在防止機能**
+
+アプリには起動時のチェック機能が組み込まれています：
+- STGドメインで開いたときに、PROD用のAPIキーが使われていたらエラーを表示して停止
+- PRODドメインで開いたときに、STG用のAPIキーが使われていたらエラーを表示して停止
+
+このチェック機能により、誤った環境でビルドされたコードがデプロイされても、ユーザーに影響が出る前に検知できます。
+
 **STG環境にデプロイする前:**
-- [ ] \`npm run build -- --mode stg\` で **必ず --mode stg を付ける**
-- [ ] \`firebase use birthday-song-app-stg\` で **STGプロジェクトを選択**
+- [ ] \`npm run deploy:stg\` コマンドを使用（自動的に build:stg と firebase use stg を実行）
+- [ ] \`.env.stg\` の \`VITE_FIREBASE_API_KEY\` が **AIzaSyDCg1** で始まることを確認
 - [ ] \`.env.stg\` に以下が設定されていることを確認:
   - \`VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app-stg.cloudfunctions.net\`
   - \`VITE_FIREBASE_PROJECT_ID=birthday-song-app-stg\`
@@ -255,9 +295,9 @@ firebase deploy --only hosting
 - [ ] Firebase Console で STGプロジェクトの Authentication > 設定 > 承認済みドメイン に \`birthday-song-app-stg.web.app\` が追加されていることを確認
 
 **PROD環境にデプロイする前:**
-- [ ] \`npm run build\` で **--mode オプションを付けない**（デフォルトで .env が使用される）
-- [ ] \`firebase use birthday-song-app\` で **PRODプロジェクトを選択**
-- [ ] \`.env\` に \`VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app.cloudfunctions.net\` が設定されていることを確認
+- [ ] \`npm run deploy:prod\` コマンドを使用（自動的に build:prod と firebase use prod を実行）
+- [ ] \`.env.production\` の \`VITE_FIREBASE_API_KEY\` が **AIzaSyBQ0E** で始まることを確認
+- [ ] \`.env.production\` に \`VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app.cloudfunctions.net\` が設定されていることを確認
 - [ ] 本番デプロイ前に必ずSTG環境でテスト済みであることを確認
 
 ---
@@ -312,14 +352,25 @@ firebase deploy --only hosting
 
 **原因と対処**:
 
-1. **Firebase設定が間違っている**
+1. **STG/PROD環境が混在している（最も多い原因）**
+   - ページを開いた直後にアラートが表示される場合:
+     ```
+     ❌ 環境エラー: STGドメインですがPROD用のAPIキーが使われています！
+     ```
+   - これは `.env.stg` に誤ったAPIキーが設定されているか、PRODのビルドがSTGにデプロイされたことを意味します
+   - **対処**:
+     1. `.env.stg` の `VITE_FIREBASE_API_KEY` を確認（AIzaSyDCg1 で始まる必要があります）
+     2. Firebase Console > birthday-song-app-stg > プロジェクトの設定 > マイアプリ から正しいAPIキーを取得
+     3. `npm run deploy:stg` で再ビルド＆再デプロイ
+
+2. **Firebase設定が間違っている**
    - ブラウザのコンソールを開く（F12キー）
    - Console タブで以下のログを確認:
      ```
      [Firebase] Initializing with projectId: birthday-song-app-stg, authDomain: birthday-song-app-stg.firebaseapp.com
      ```
    - もし `projectId` が `birthday-song-app` (PROD) になっていたら、`.env.stg` の設定が読み込まれていない
-   - **対処**: `npm run build -- --mode stg` で再ビルドして再デプロイ
+   - **対処**: `npm run build:stg` で再ビルドして `firebase use stg && firebase deploy --only hosting:birthday-song-app-stg` で再デプロイ
 
 2. **Firebase Console でGoogle認証が有効化されていない**
    - Firebase Console > Authentication > Sign-in method > Google を確認
