@@ -3,7 +3,7 @@
     "rules": "firestore.rules"
   },
   "hosting": {
-    "site": "birthday-song-app",
+    "target": "app",
     "public": "dist",
     "ignore": [
       "firebase.json",
