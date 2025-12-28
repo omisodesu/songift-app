@@ -48,6 +48,54 @@ async function checkRateLimit(ip, maxRequests, windowMs) {
 }
 
 /**
+ * 環境に応じてフロントエンドのベースURLを解決
+ * @param {string} appEnv - APP_ENV 環境変数の値
+ * @return {string} フロントエンドのベースURL
+ */
+function resolveFrontendBaseUrl(appEnv) {
+  const isProduction = appEnv === "prod";
+  return isProduction
+    ? "https://birthday-song-app.web.app"
+    : "https://birthday-song-app-stg.web.app";
+}
+
+/**
+ * 環境に応じてメール送信先とsubjectを解決
+ * @param {string} appEnv - APP_ENV 環境変数の値
+ * @param {string} stgOverrideTo - STG_EMAIL_OVERRIDE_TO 環境変数の値
+ * @param {string} originalTo - 元の送信先メールアドレス
+ * @param {string} originalSubject - 元の件名
+ * @return {{to: string, subject: string, shouldSkip: boolean}} 解決された送信先と件名
+ */
+function resolveEmailDestination(appEnv, stgOverrideTo, originalTo, originalSubject) {
+  const isProduction = appEnv === "prod";
+
+  if (isProduction) {
+    return {
+      to: originalTo,
+      subject: originalSubject,
+      shouldSkip: false,
+    };
+  }
+
+  // stg環境
+  if (!stgOverrideTo || stgOverrideTo.trim() === "") {
+    console.warn(`[STG] STG_EMAIL_OVERRIDE_TO is not set. Email will be skipped for safety. Original recipient: ${originalTo}`);
+    return {
+      to: originalTo,
+      subject: originalSubject,
+      shouldSkip: true,
+    };
+  }
+
+  return {
+    to: stgOverrideTo.trim(),
+    subject: `[STG] ${originalSubject}`,
+    shouldSkip: false,
+  };
+}
+
+/**
  * 注文作成 + トークン生成 + メール送信
  *
  * リクエストボディ:
@@ -59,7 +107,7 @@ async function checkRateLimit(ip, maxRequests, windowMs) {
  */
 exports.createOrder = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL"],
+  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -129,8 +177,14 @@ exports.createOrder = onRequest({
     const orderId = orderRef.id;
     console.log(`Order created: ${orderId}`);
 
-    // 専用URL生成
-    const orderUrl = `https://birthday-song-app.web.app/o/${orderId}?t=${token}`;
+    // 環境変数取得（メール送信とURL生成で共通使用）
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+
+    // 専用URL生成（環境に応じてドメイン切替）
+    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+    const orderUrl = `${frontendBaseUrl}/o/${orderId}?t=${token}`;
+    console.log(`Order URL generated: ${orderUrl} (env: ${appEnv})`);
 
     // メール本文作成
     const emailBody = `${formData.targetName}様のバースデーソング作成を承りました。
@@ -152,38 +206,61 @@ Songift - 世界に一つのバースデーソング`;
 
     sgMail.setApiKey(sendgridApiKey.trim());
 
-    const msg = {
-      to: email,
-      from: {
-        email: "fukui@gadandan.co.jp",
-        name: "Songift",
-      },
-      subject: `【Songift】ご注文を受け付けました - ${formData.targetName}様`,
-      text: emailBody,
-      html: emailBody.replace(/\n/g, "<br>"),
-    };
+    // 環境に応じてメール送信先を解決
+    const originalSubject = `【Songift】ご注文を受け付けました - ${formData.targetName}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, email, originalSubject);
 
-    await sgMail.send(msg);
-    console.log(`Confirmation email sent to: ${email}`);
+    if (emailDestination.shouldSkip) {
+      // STG環境でメール送信先が未設定の場合はスキップ
+      console.log(`[STG] Email sending skipped (no override address configured)`);
+    } else {
+      const msg = {
+        to: emailDestination.to,
+        from: {
+          email: "fukui@gadandan.co.jp",
+          name: "Songift",
+        },
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+      };
 
-    // Slack通知送信
-    const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
-    if (slackWebhookUrl) {
-      const slackMessage = plan === "simple"
-        ? `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`
-        : `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*メール:* ${email}`;
+      await sgMail.send(msg);
+      console.log(`Confirmation email sent to: ${emailDestination.to} (original: ${email}, env: ${appEnv})`);
+    }
 
-      await axios.post(slackWebhookUrl, {
-        text: slackMessage,
-      });
+    // Slack通知送信（PROD環境のみ）
+    if (appEnv === "prod") {
+      const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
+      if (slackWebhookUrl) {
+        const slackMessage = plan === "simple"
+          ? `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`
+          : `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*メール:* ${email}`;
 
-      console.log("Slack notification sent");
+        await axios.post(slackWebhookUrl, {
+          text: slackMessage,
+        });
+
+        console.log("Slack notification sent");
+      }
+    } else {
+      console.log(`[${appEnv.toUpperCase()}] Slack notification skipped in createOrder (non-production environment)`);
+    }
+
+    // レスポンスメッセージを環境に応じて調整
+    let responseMessage = "注文を受け付けました。メールをご確認ください。";
+    if (appEnv !== "prod") {
+      if (emailDestination.shouldSkip) {
+        responseMessage = "注文を受け付けました（STG環境: メール送信はスキップされました）。";
+      } else {
+        responseMessage = `注文を受け付けました（STG環境: テスト用メールアドレスに送信されました）。`;
+      }
     }
 
     res.status(200).json({
       success: true,
       orderId: orderId,
-      message: "注文を受け付けました。メールをご確認ください。",
+      message: responseMessage,
     });
   } catch (error) {
     console.error("Error creating order:", error);
@@ -207,7 +284,7 @@ Songift - 世界に一つのバースデーソング`;
  */
 exports.sendSlackNotification = onRequest({
   cors: true,
-  secrets: ["SLACK_WEBHOOK_URL"],
+  secrets: ["SLACK_WEBHOOK_URL", "APP_ENV"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -220,6 +297,17 @@ exports.sendSlackNotification = onRequest({
   }
 
   try {
+    // 環境判定（STG環境ではSlack通知をスキップ - パラメータ検証より先に実施）
+    const appEnv = process.env.APP_ENV || "prod";
+    if (appEnv !== "prod") {
+      console.log(`[${appEnv.toUpperCase()}] Slack notification skipped (non-production environment)`);
+      res.status(200).json({
+        success: true,
+        message: "Slack通知はSTG環境のためスキップされました",
+      });
+      return;
+    }
+
     const {plan, formData, userEmail} = req.body;
 
     // パラメータ検証
@@ -279,7 +367,7 @@ exports.sendSlackNotification = onRequest({
  */
 exports.sendBirthdaySongEmail = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY"],
+  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -324,29 +412,40 @@ exports.sendBirthdaySongEmail = onRequest({
 
     sgMail.setApiKey(sendgridApiKey.trim());
 
-    // メール送信
-    const msg = {
-      to: recipientEmail,
-      from: {
-        email: "fukui@gadandan.co.jp",
-        name: "Songift",
-      },
-      subject: `【Songift】世界に一つのバースデーソングをお届けします - ${recipientName}様`,
-      text: emailBody,
-      html: emailBody.replace(/\n/g, "<br>"),
-      attachments: [
-        {
-          content: mp3Base64,
-          filename: `birthday_song_${recipientName}.mp3`,
-          type: "audio/mpeg",
-          disposition: "attachment",
+    // 環境に応じてメール送信先を解決
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${recipientName}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
+
+    if (emailDestination.shouldSkip) {
+      // STG環境でメール送信先が未設定の場合はスキップ
+      console.log(`[STG] Email sending skipped (no override address configured). Original recipient: ${recipientEmail}`);
+    } else {
+      // メール送信
+      const msg = {
+        to: emailDestination.to,
+        from: {
+          email: "fukui@gadandan.co.jp",
+          name: "Songift",
         },
-      ],
-    };
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+        attachments: [
+          {
+            content: mp3Base64,
+            filename: `birthday_song_${recipientName}.mp3`,
+            type: "audio/mpeg",
+            disposition: "attachment",
+          },
+        ],
+      };
 
-    await sgMail.send(msg);
+      await sgMail.send(msg);
 
-    console.log(`Email sent successfully to ${recipientEmail}`);
+      console.log(`Email sent successfully to ${emailDestination.to} (original: ${recipientEmail}, env: ${appEnv})`);
+    }
 
     // Firestoreのステータス更新
     await admin.firestore().collection("orders").doc(orderId).update({
@@ -354,9 +453,19 @@ exports.sendBirthdaySongEmail = onRequest({
       deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // レスポンスメッセージを環境に応じて調整
+    let responseMessage = "メール送信完了";
+    if (appEnv !== "prod") {
+      if (emailDestination.shouldSkip) {
+        responseMessage = "メール送信完了（STG環境: 送信はスキップされました）";
+      } else {
+        responseMessage = "メール送信完了（STG環境: テスト用メールアドレスに送信されました）";
+      }
+    }
+
     res.status(200).json({
       success: true,
-      message: "メール送信完了",
+      message: responseMessage,
       orderId: orderId,
     });
   } catch (error) {

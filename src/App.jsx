@@ -13,16 +13,48 @@ import {
 // ---------------------------
 const firebaseConfig = {
   // 環境変数から読み込み（Vite標準の書き方）
-  // ※プレビュー環境で警告が出ますが、ローカル環境では正常に動作します
+  // STG環境では .env.stg が、PROD環境では .env が読み込まれる
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: "birthday-song-app.firebaseapp.com",
-  projectId: "birthday-song-app",
-  storageBucket: "birthday-song-app.firebasestorage.app",
-  messagingSenderId: "60887117542",
-  appId: "1:60887117542:web:f4b8dfd446c5f26792d527"
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-// 初期化
+// 初期化（環境確認ログ追加）
+console.log(`[Firebase] Initializing with projectId: ${firebaseConfig.projectId}, authDomain: ${firebaseConfig.authDomain}`);
+
+// ---------------------------
+// 🛡️ 起動時の安全チェック（STG/PROD混在防止）
+// ---------------------------
+(() => {
+  const hostname = window.location.hostname;
+  const apiKey = firebaseConfig.apiKey;
+
+  // STGドメインのチェック
+  if (hostname === 'birthday-song-app-stg.web.app' || hostname === 'birthday-song-app-stg.firebaseapp.com') {
+    if (!apiKey.startsWith('AIzaSyDCg1')) {
+      const errorMsg = `❌ 環境エラー: STGドメインですがPROD用のAPIキーが使われています！\n\nドメイン: ${hostname}\nAPIキー prefix: ${apiKey.substring(0, 15)}...\n期待値: AIzaSyDCg1...\n\n修正方法:\n1. .env.stg のVITE_FIREBASE_API_KEYをSTG用に変更\n2. npm run build:stg でビルド\n3. npm run deploy:stg でデプロイ`;
+      console.error(errorMsg);
+      alert(errorMsg);
+      throw new Error('STG/PROD環境混在エラー');
+    }
+    console.log('✅ 環境チェックOK: STG環境として正しく動作しています');
+  }
+
+  // PRODドメインのチェック
+  if (hostname === 'birthday-song-app.web.app' || hostname === 'birthday-song-app.firebaseapp.com') {
+    if (!apiKey.startsWith('AIzaSyBQ0E')) {
+      const errorMsg = `❌ 環境エラー: PRODドメインですがSTG用のAPIキーが使われています！\n\nドメイン: ${hostname}\nAPIキー prefix: ${apiKey.substring(0, 15)}...\n期待値: AIzaSyBQ0E...\n\n修正方法:\n1. .env.production のVITE_FIREBASE_API_KEYをPROD用に変更\n2. npm run build:prod でビルド\n3. npm run deploy:prod でデプロイ`;
+      console.error(errorMsg);
+      alert(errorMsg);
+      throw new Error('STG/PROD環境混在エラー');
+    }
+    console.log('✅ 環境チェックOK: PROD環境として正しく動作しています');
+  }
+})();
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
@@ -34,7 +66,6 @@ const db = getFirestore(app);
 // ★プレビュー環境では警告が出ますが、ローカル環境(Vite)ではこの書き方が必須です
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
-const SLACK_WEBHOOK_URL = import.meta.env.VITE_SLACK_WEBHOOK_URL;
 
 // ---------------------------
 // 定数・データ
@@ -228,7 +259,7 @@ const OrderPage = ({ user = null }) => {
 
     try {
       // Cloud Functions createOrder を呼び出し
-      const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/createOrder";
+      const functionUrl = `${import.meta.env.VITE_FUNCTIONS_BASE_URL}/createOrder`;
 
       const response = await fetch(functionUrl, {
         method: 'POST',
@@ -461,7 +492,7 @@ const OrderConfirmPage = () => {
       }
 
       try {
-        const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/getOrderByToken";
+        const functionUrl = `${import.meta.env.VITE_FUNCTIONS_BASE_URL}/getOrderByToken`;
 
         const response = await fetch(functionUrl, {
           method: 'POST',
@@ -612,25 +643,39 @@ const AdminLoginPage = () => {
 
   const handleGoogleLogin = async () => {
     try {
+      console.log('[Auth] Attempting Google sign in with popup...');
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
+      console.log('[Auth] Sign in successful:', user.email);
 
       // 管理者チェック
       const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
       const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
 
       if (!adminEmails.includes(user.email)) {
+        console.warn('[Auth] User is not an admin:', user.email);
         await signOut(auth);
         alert('管理者権限がありません');
         return;
       }
 
+      console.log('[Auth] Admin verified, navigating to /admin');
       navigate('/admin');
     } catch (error) {
-      console.error("ログインエラー:", error);
+      // 詳細なエラー情報をログ出力
+      console.error('[Auth] Login error occurred:', {
+        code: error?.code,
+        message: error?.message,
+        email: error?.customData?.email,
+        fullError: error
+      });
+
+      // ユーザーにも詳細を表示
       const code = error?.code || '(no code)';
       const message = error?.message || String(error);
-      alert(`ログインに失敗しました。\ncode: ${code}\nmessage: ${message}`);
+      const email = error?.customData?.email ? `\nemail: ${error.customData.email}` : '';
+
+      alert(`ログインに失敗しました。${email}\n\nエラーコード: ${code}\n\n詳細: ${message}\n\nFirebase設定を確認してください:\n- projectId: ${import.meta.env.VITE_FIREBASE_PROJECT_ID}\n- authDomain: ${import.meta.env.VITE_FIREBASE_AUTH_DOMAIN}`);
     }
   };
 
@@ -944,6 +989,13 @@ const AdminPage = ({ user }) => {
     if (!confirm("Suno APIで楽曲生成を開始しますか？（クレジットを消費します）")) return;
 
     try {
+      // callbackUrlを環境に応じて切り替え（stg/prod判定）
+      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+      const isStg = projectId && projectId.includes("-stg");
+      const callbackBaseUrl = isStg
+        ? "https://birthday-song-app-stg.firebaseapp.com"
+        : "https://birthday-song-app.firebaseapp.com";
+
       // 正しいエンドポイント: /api/v1/generate
       const response = await fetch(`${SUNO_BASE_URL}/generate`, {
         method: "POST",
@@ -958,7 +1010,7 @@ const AdminPage = ({ user }) => {
           title: "Happy Birthday",       // タイトル
           instrumental: false,           // ボーカル有り
           model: "V5",                   // 最新モデル
-          callBackUrl: "https://birthday-song-app.firebaseapp.com/api/callback"
+          callBackUrl: `${callbackBaseUrl}/api/callback`
         })
       });
 
@@ -1040,7 +1092,7 @@ const AdminPage = ({ user }) => {
       });
 
       // Cloud Functionを呼び出し
-      const functionUrl = "https://us-central1-birthday-song-app.cloudfunctions.net/sendBirthdaySongEmail";
+      const functionUrl = `${import.meta.env.VITE_FUNCTIONS_BASE_URL}/sendBirthdaySongEmail`;
 
       const response = await fetch(functionUrl, {
         method: "POST",

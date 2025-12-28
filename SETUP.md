@@ -27,6 +27,23 @@
 
 ### 1. 環境変数の設定
 
+#### 1.1 Firebase設定の取得
+
+**PROD環境の設定取得:**
+1. [Firebase Console](https://console.firebase.google.com/) にアクセス
+2. **birthday-song-app** プロジェクトを選択
+3. プロジェクト設定（歯車アイコン）→「全般」タブ
+4. 「マイアプリ」セクションで、ウェブアプリを選択
+5. 「SDK の設定と構成」で「構成」を選択
+6. 表示される `firebaseConfig` の値をコピー
+
+**STG環境の設定取得:**
+1. [Firebase Console](https://console.firebase.google.com/) にアクセス
+2. **birthday-song-app-stg** プロジェクトを選択
+3. 同様に設定値を取得
+
+#### 1.2 .env ファイルの作成
+
 `.env` ファイルを作成して以下を設定：
 
 \`\`\`bash
@@ -36,24 +53,42 @@ cp .env.example .env
 `.env` ファイルを編集：
 
 \`\`\`env
+# Firebase Configuration (PROD)
 VITE_FIREBASE_API_KEY=あなたのFirebase APIキー
+VITE_FIREBASE_AUTH_DOMAIN=birthday-song-app.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=birthday-song-app
+VITE_FIREBASE_STORAGE_BUCKET=birthday-song-app.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=あなたのMessaging Sender ID
+VITE_FIREBASE_APP_ID=あなたのApp ID
+
+# API Keys
 VITE_GEMINI_API_KEY=あなたのGemini APIキー
 VITE_SUNO_API_KEY=あなたのSuno APIキー
-VITE_SLACK_WEBHOOK_URL=あなたのSlack Webhook URL
+
+# Admin Settings
 VITE_ADMIN_EMAIL=管理者のメールアドレス
+VITE_ENABLE_ADMIN_CHECK=false
+
+# Cloud Functions Base URL
+VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app.cloudfunctions.net
 \`\`\`
 
-### 2. Slack Webhook URLの取得
+**STG環境の場合は `.env.stg` も作成:**
 
-1. [Slack API](https://api.slack.com/apps) にアクセス
-2. 「Create New App」→「From scratch」
-3. App名とWorkspaceを選択
-4. 「Incoming Webhooks」を有効化
-5. 「Add New Webhook to Workspace」をクリック
-6. 通知先チャンネルを選択
-7. 生成されたWebhook URLをコピーして `.env` に追加
+\`\`\`env
+# Firebase Configuration (STG)
+VITE_FIREBASE_API_KEY=あなたのSTG Firebase APIキー
+VITE_FIREBASE_AUTH_DOMAIN=birthday-song-app-stg.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=birthday-song-app-stg
+VITE_FIREBASE_STORAGE_BUCKET=birthday-song-app-stg.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=あなたのSTG Messaging Sender ID
+VITE_FIREBASE_APP_ID=あなたのSTG App ID
 
-### 3. Firebase Functionsのセットアップ
+# 他の設定は .env と同じ
+VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app-stg.cloudfunctions.net
+\`\`\`
+
+### 2. Firebase Functionsのセットアップ
 
 #### 3.1 Firebase CLI認証
 
@@ -130,16 +165,129 @@ firebase deploy --only functions
 
 ### 4. フロントエンドのビルド＆デプロイ
 
+**⚠️ 重要**: STGとPRODの混同を防ぐため、以下のコマンドをそのままコピペして実行してください。
+
+---
+
+#### 4.1 STG環境へのデプロイ（テスト環境）
+
+**STG環境では以下が適用されます:**
+- Functions URL: \`https://us-central1-birthday-song-app-stg.cloudfunctions.net\`
+- メール送信先: \`STG_EMAIL_OVERRIDE_TO\` で設定されたテストアドレスに強制変更
+- メール件名: \`[STG]\` プレフィックスが付与
+- Slack通知: 完全スキップ
+
+**デプロイコマンド（すべて自動化）:**
+
 \`\`\`bash
-npm run build
-firebase deploy --only hosting
+# STG環境にビルド＆デプロイ（一発コマンド）
+npm run deploy:stg
 \`\`\`
 
-または、Functions + Hosting を一度にデプロイする場合：
+**または手動で実行する場合:**
+
 \`\`\`bash
-npm run build
-firebase deploy
+# 1. STG向けビルド（.env.stg を使用）
+npm run build:stg
+
+# 2. STGプロジェクトに切り替えてデプロイ
+firebase use stg && firebase deploy --only hosting:birthday-song-app-stg
 \`\`\`
+
+**確認方法:**
+
+⚠️ **重要**: デプロイ後は必ずブラウザのキャッシュをクリアしてください！
+
+1. https://birthday-song-app-stg.web.app/ にアクセス
+2. **ハードリフレッシュ**を実行:
+   - Mac: `Cmd + Shift + R`
+   - Windows: `Ctrl + Shift + R`
+3. ブラウザの開発者ツール（F12）を開く
+4. **Consoleタブ**で以下のログを確認:
+   ```
+   [Firebase] Initializing with projectId: birthday-song-app-stg
+   ✅ 環境チェックOK: STG環境として正しく動作しています
+   ```
+5. **Networkタブ**を開き、ページをリロード
+6. `identitytoolkit` へのリクエストを探し、Request URL の `key=` パラメータを確認:
+   - ✅ 正しい: `key=AIzaSyDCg1...` (STG用APIキー)
+   - ❌ 間違い: `key=AIzaSyBQ0E...` (PROD用APIキー) → キャッシュクリアが必要
+7. `/admin/login` でGoogleログインが成功することを確認
+
+---
+
+#### 4.2 PROD環境へのデプロイ（本番環境）
+
+**PROD環境では以下が適用されます:**
+- Functions URL: \`https://us-central1-birthday-song-app.cloudfunctions.net\`
+- メール送信先: ユーザーが入力した実際のメールアドレス
+- Slack通知: 有効（本番用Slackチャンネルに通知）
+
+**デプロイコマンド（すべて自動化）:**
+
+\`\`\`bash
+# PROD環境にビルド＆デプロイ（一発コマンド）
+npm run deploy:prod
+\`\`\`
+
+**または手動で実行する場合:**
+
+\`\`\`bash
+# 1. PROD向けビルド（.env.production を使用）
+npm run build:prod
+
+# 2. PRODプロジェクトに切り替えてデプロイ
+firebase use prod && firebase deploy --only hosting:birthday-song-app
+\`\`\`
+
+**確認方法:**
+
+⚠️ **重要**: デプロイ後は必ずブラウザのキャッシュをクリアしてください！
+
+1. https://birthday-song-app.web.app/ にアクセス
+2. **ハードリフレッシュ**を実行:
+   - Mac: `Cmd + Shift + R`
+   - Windows: `Ctrl + Shift + R`
+3. ブラウザの開発者ツール（F12）を開く
+4. **Consoleタブ**で以下のログを確認:
+   ```
+   [Firebase] Initializing with projectId: birthday-song-app
+   ✅ 環境チェックOK: PROD環境として正しく動作しています
+   ```
+5. **Networkタブ**を開き、ページをリロード
+6. `identitytoolkit` へのリクエストを探し、Request URL の `key=` パラメータを確認:
+   - ✅ 正しい: `key=AIzaSyBQ0E...` (PROD用APIキー)
+   - ❌ 間違い: `key=AIzaSyDCg1...` (STG用APIキー) → キャッシュクリアが必要
+7. 本番用Slackチャンネルに通知が届くことを確認
+
+---
+
+#### 4.3 デプロイ前のチェックリスト
+
+**🔒 重要: STG/PROD混在防止機能**
+
+アプリには起動時のチェック機能が組み込まれています：
+- STGドメインで開いたときに、PROD用のAPIキーが使われていたらエラーを表示して停止
+- PRODドメインで開いたときに、STG用のAPIキーが使われていたらエラーを表示して停止
+
+このチェック機能により、誤った環境でビルドされたコードがデプロイされても、ユーザーに影響が出る前に検知できます。
+
+**STG環境にデプロイする前:**
+- [ ] \`npm run deploy:stg\` コマンドを使用（自動的に build:stg と firebase use stg を実行）
+- [ ] \`.env.stg\` の \`VITE_FIREBASE_API_KEY\` が **AIzaSyDCg1** で始まることを確認
+- [ ] \`.env.stg\` に以下が設定されていることを確認:
+  - \`VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app-stg.cloudfunctions.net\`
+  - \`VITE_FIREBASE_PROJECT_ID=birthday-song-app-stg\`
+  - \`VITE_FIREBASE_AUTH_DOMAIN=birthday-song-app-stg.firebaseapp.com\`
+  - その他のFirebase設定（messagingSenderId, appId）
+- [ ] Firebase Console で STGプロジェクトの Authentication > Sign-in method > Google が有効化されていることを確認
+- [ ] Firebase Console で STGプロジェクトの Authentication > 設定 > 承認済みドメイン に \`birthday-song-app-stg.web.app\` が追加されていることを確認
+
+**PROD環境にデプロイする前:**
+- [ ] \`npm run deploy:prod\` コマンドを使用（自動的に build:prod と firebase use prod を実行）
+- [ ] \`.env.production\` の \`VITE_FIREBASE_API_KEY\` が **AIzaSyBQ0E** で始まることを確認
+- [ ] \`.env.production\` に \`VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app.cloudfunctions.net\` が設定されていることを確認
+- [ ] 本番デプロイ前に必ずSTG環境でテスト済みであることを確認
 
 ---
 
@@ -187,11 +335,58 @@ firebase deploy
 
 ## トラブルシューティング
 
-### Slack通知が届かない
+### Googleログインが失敗する（STG環境）
 
-- `.env` の `VITE_SLACK_WEBHOOK_URL` が正しいか確認
-- Slack Appの設定でWebhookが有効になっているか確認
-- ブラウザのコンソールでエラーを確認
+**症状**: STG環境で管理画面にログインしようとするとエラーが表示される
+
+**原因と対処**:
+
+1. **STG/PROD環境が混在している（最も多い原因）**
+   - ページを開いた直後にアラートが表示される場合:
+     ```
+     ❌ 環境エラー: STGドメインですがPROD用のAPIキーが使われています！
+     ```
+   - これは `.env.stg` に誤ったAPIキーが設定されているか、PRODのビルドがSTGにデプロイされたことを意味します
+   - **対処**:
+     1. `.env.stg` の `VITE_FIREBASE_API_KEY` を確認（AIzaSyDCg1 で始まる必要があります）
+     2. Firebase Console > birthday-song-app-stg > プロジェクトの設定 > マイアプリ から正しいAPIキーを取得
+     3. `npm run deploy:stg` で再ビルド＆再デプロイ
+
+2. **Firebase設定が間違っている**
+   - ブラウザのコンソールを開く（F12キー）
+   - Console タブで以下のログを確認:
+     ```
+     [Firebase] Initializing with projectId: birthday-song-app-stg, authDomain: birthday-song-app-stg.firebaseapp.com
+     ```
+   - もし `projectId` が `birthday-song-app` (PROD) になっていたら、`.env.stg` の設定が読み込まれていない
+   - **対処**: `npm run build:stg` で再ビルドして `firebase use stg && firebase deploy --only hosting:birthday-song-app-stg` で再デプロイ
+
+2. **Firebase Console でGoogle認証が有効化されていない**
+   - Firebase Console > Authentication > Sign-in method > Google を確認
+   - 「有効」になっていない場合は有効化する
+
+3. **承認済みドメインが登録されていない**
+   - Firebase Console > Authentication > 設定 > 承認済みドメイン を確認
+   - `birthday-song-app-stg.web.app` が登録されているか確認
+   - 登録されていない場合は「ドメインを追加」をクリック
+
+4. **詳細なエラー情報の確認**
+   - ログイン失敗時に表示されるアラートに以下が含まれる:
+     - エラーコード（例: `auth/unauthorized-domain`）
+     - 詳細メッセージ
+     - 使用中の projectId と authDomain
+   - エラーコードに応じて対処:
+     - `auth/unauthorized-domain`: 承認済みドメインに追加
+     - `auth/invalid-api-key`: APIキーが間違っている
+     - `auth/operation-not-allowed`: Google認証が無効になっている
+
+**確認コマンド**:
+\`\`\`bash
+# ビルド時にどの環境変数が使われているか確認
+npm run build -- --mode stg
+# dist/assets/*.js ファイルに "birthday-song-app-stg" が含まれているか grep で確認
+grep -r "birthday-song-app-stg" dist/
+\`\`\`
 
 ### 編集ボタンが機能しない
 

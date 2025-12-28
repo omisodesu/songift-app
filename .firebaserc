@@ -1,5 +1,24 @@
 {
   "projects": {
-    "default": "birthday-song-app"
-  }
+    "default": "birthday-song-app",
+    "stg": "birthday-song-app-stg",
+    "prod": "birthday-song-app"
+  },
+  "targets": {
+    "birthday-song-app-stg": {
+      "hosting": {
+        "app": [
+          "birthday-song-app-stg"
+        ]
+      }
+    },
+    "birthday-song-app": {
+      "hosting": {
+        "app": [
+          "birthday-song-app"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
