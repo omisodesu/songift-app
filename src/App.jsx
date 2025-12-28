@@ -66,7 +66,6 @@ const db = getFirestore(app);
 // ★プレビュー環境では警告が出ますが、ローカル環境(Vite)ではこの書き方が必須です
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
-const SLACK_WEBHOOK_URL = import.meta.env.VITE_SLACK_WEBHOOK_URL;
 
 // ---------------------------
 // 定数・データ
@@ -990,6 +989,13 @@ const AdminPage = ({ user }) => {
     if (!confirm("Suno APIで楽曲生成を開始しますか？（クレジットを消費します）")) return;
 
     try {
+      // callbackUrlを環境に応じて切り替え（stg/prod判定）
+      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+      const isStg = projectId && projectId.includes("-stg");
+      const callbackBaseUrl = isStg
+        ? "https://birthday-song-app-stg.firebaseapp.com"
+        : "https://birthday-song-app.firebaseapp.com";
+
       // 正しいエンドポイント: /api/v1/generate
       const response = await fetch(`${SUNO_BASE_URL}/generate`, {
         method: "POST",
@@ -1004,7 +1010,7 @@ const AdminPage = ({ user }) => {
           title: "Happy Birthday",       // タイトル
           instrumental: false,           // ボーカル有り
           model: "V5",                   // 最新モデル
-          callBackUrl: "https://birthday-song-app.firebaseapp.com/api/callback"
+          callBackUrl: `${callbackBaseUrl}/api/callback`
         })
       });
 

@@ -64,7 +64,6 @@ VITE_FIREBASE_APP_ID=あなたのApp ID
 # API Keys
 VITE_GEMINI_API_KEY=あなたのGemini APIキー
 VITE_SUNO_API_KEY=あなたのSuno APIキー
-VITE_SLACK_WEBHOOK_URL=あなたのSlack Webhook URL
 
 # Admin Settings
 VITE_ADMIN_EMAIL=管理者のメールアドレス
@@ -89,17 +88,7 @@ VITE_FIREBASE_APP_ID=あなたのSTG App ID
 VITE_FUNCTIONS_BASE_URL=https://us-central1-birthday-song-app-stg.cloudfunctions.net
 \`\`\`
 
-### 2. Slack Webhook URLの取得
-
-1. [Slack API](https://api.slack.com/apps) にアクセス
-2. 「Create New App」→「From scratch」
-3. App名とWorkspaceを選択
-4. 「Incoming Webhooks」を有効化
-5. 「Add New Webhook to Workspace」をクリック
-6. 通知先チャンネルを選択
-7. 生成されたWebhook URLをコピーして `.env` に追加
-
-### 3. Firebase Functionsのセットアップ
+### 2. Firebase Functionsのセットアップ
 
 #### 3.1 Firebase CLI認証
 
@@ -398,12 +387,6 @@ npm run build -- --mode stg
 # dist/assets/*.js ファイルに "birthday-song-app-stg" が含まれているか grep で確認
 grep -r "birthday-song-app-stg" dist/
 \`\`\`
-
-### Slack通知が届かない
-
-- `.env` の `VITE_SLACK_WEBHOOK_URL` が正しいか確認
-- Slack Appの設定でWebhookが有効になっているか確認
-- ブラウザのコンソールでエラーを確認
 
 ### 編集ボタンが機能しない
 
