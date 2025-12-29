@@ -7,6 +7,7 @@ import {
   getFirestore, collection, addDoc, serverTimestamp,
   query, orderBy, doc, updateDoc, onSnapshot
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ---------------------------
 // Firebase設定
@@ -59,6 +60,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 const db = getFirestore(app);
+const functions = getFunctions(app);
 
 // ---------------------------
 // API Keys（未使用だが既存コードとの互換性のため残す）
@@ -478,10 +480,17 @@ const OrderConfirmPage = () => {
   const { orderId } = useParams();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('t');
+  const navigate = useNavigate();
 
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Phase1: 署名URL管理
+  const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
+  const [fullSignedUrl, setFullSignedUrl] = useState(null);
+  const [fullVideoError, setFullVideoError] = useState(null);
+  const [remainingDays, setRemainingDays] = useState(null);
 
   useEffect(() => {
     const fetchOrder = async () => {
@@ -517,6 +526,51 @@ const OrderConfirmPage = () => {
     fetchOrder();
   }, [orderId, token]);
 
+  // Phase1: プレビュー音声の署名URL取得
+  useEffect(() => {
+    if (order && order.previewAudioPath) {
+      const fetchPreviewSignedUrl = async () => {
+        try {
+          const getPreviewSignedUrl = httpsCallable(functions, "getPreviewSignedUrl");
+          const result = await getPreviewSignedUrl({ orderId, token });
+          setPreviewSignedUrl(result.data.signedUrl);
+        } catch (err) {
+          console.error("Preview signed URL error:", err);
+        }
+      };
+      fetchPreviewSignedUrl();
+    }
+  }, [order, orderId, token]);
+
+  // Phase1: フル動画の署名URL取得
+  useEffect(() => {
+    if (order && order.paymentStatus === 'paid' && order.fullVideoPath) {
+      const fetchFullSignedUrl = async () => {
+        try {
+          const getFullSignedUrl = httpsCallable(functions, "getFullSignedUrl");
+          const result = await getFullSignedUrl({ orderId, token });
+          setFullSignedUrl(result.data.signedUrl);
+          setRemainingDays(result.data.remainingDays);
+          setFullVideoError(null);
+        } catch (err) {
+          console.error("Full signed URL error:", err);
+          // エラーメッセージから期限切れかどうかを判定
+          if (err.message && err.message.includes("expired:")) {
+            setFullVideoError("expired");
+          } else {
+            setFullVideoError(err.message);
+          }
+        }
+      };
+      fetchFullSignedUrl();
+    }
+  }, [order, orderId, token]);
+
+  // Phase1: 期限切れチェック（パターンA）
+  const isPaid = order?.paymentStatus === 'paid';
+  const isExpired = isPaid && order?.accessExpiresAt &&
+    new Date(order.accessExpiresAt.seconds * 1000) < new Date();
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -543,6 +597,26 @@ const OrderConfirmPage = () => {
     );
   }
 
+  // Phase1: 期限切れ専用画面（パターンA）
+  if (isExpired) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white p-8 rounded-xl shadow text-center">
+          <div className="text-yellow-500 text-6xl mb-4">🔒</div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-4">リンクの有効期限が切れました</h2>
+          <p className="text-gray-600 mb-2">このリンクは発行から30日で期限切れになります。</p>
+          <p className="text-gray-600 mb-6">必要な場合はトップページから再度お試しください。</p>
+          <button
+            onClick={() => navigate("/")}
+            className="inline-block bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600"
+          >
+            トップページへ戻る
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const getStatusDisplay = (status) => {
     switch (status) {
       case 'completed':
@@ -553,6 +627,10 @@ const OrderConfirmPage = () => {
         return { text: '楽曲確認中', color: 'bg-blue-100 text-blue-800', progress: 80 };
       case 'generating_song':
         return { text: '楽曲生成中', color: 'bg-yellow-100 text-yellow-800', progress: 60 };
+      case 'song_failed':
+        return { text: '生成失敗', color: 'bg-red-100 text-red-800', progress: 50 };
+      case 'song_timeout':
+        return { text: 'タイムアウト', color: 'bg-yellow-100 text-yellow-800', progress: 50 };
       case 'processing':
         return { text: '制作中', color: 'bg-yellow-100 text-yellow-800', progress: 40 };
       default:
@@ -626,6 +704,55 @@ const OrderConfirmPage = () => {
             >
               ダウンロード
             </a>
+          </div>
+        )}
+
+        {/* Phase1: プレビュー音声セクション */}
+        {order.previewAudioPath && previewSignedUrl && (
+          <div className="mb-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
+            <h3 className="font-bold text-blue-800 mb-4 text-lg">🎵 15秒プレビュー（無料）</h3>
+            <audio controls src={previewSignedUrl} className="w-full" />
+            <p className="text-xs text-gray-500 mt-2">※ 冒頭15秒のプレビューです</p>
+          </div>
+        )}
+
+        {/* Phase1: Paywallメッセージ（未課金時） */}
+        {order.videoGenerationStatus === 'completed' && order.paymentStatus !== 'paid' && (
+          <div className="mb-8 p-6 bg-gray-100 rounded-lg border-2 border-gray-300">
+            <h3 className="font-bold text-gray-800 mb-3 text-lg">🔒 フル動画を視聴するには</h3>
+            <p className="text-gray-700 mb-2">フル動画（約3分、縦型1080x1920）をご覧いただくには、管理者にお問い合わせください。</p>
+            <p className="text-sm text-gray-500">※ Phase2でオンライン決済機能を実装予定です</p>
+          </div>
+        )}
+
+        {/* Phase1: フル動画セクション（課金後のみ） */}
+        {order.paymentStatus === 'paid' && !isExpired && order.fullVideoPath && (
+          <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-purple-800 text-lg">🎬 フル動画（縦型1080x1920）</h3>
+              {remainingDays !== null && (
+                <span className="text-sm font-bold text-purple-600">残り {remainingDays} 日</span>
+              )}
+            </div>
+
+            {fullSignedUrl && (
+              <>
+                <video controls src={fullSignedUrl} className="w-full mb-4 rounded" style={{ maxHeight: '600px' }} />
+                <a
+                  href={fullSignedUrl}
+                  download="birthday_song.mp4"
+                  className="block w-full text-center bg-purple-600 text-white py-3 rounded-lg hover:bg-purple-700 font-bold"
+                >
+                  動画をダウンロード
+                </a>
+              </>
+            )}
+
+            {fullVideoError && fullVideoError !== 'expired' && (
+              <div className="text-center py-4 text-red-600">
+                <p>エラー: {fullVideoError}</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -739,7 +866,24 @@ const AdminPage = ({ user }) => {
   // ポーリング処理 (useCallbackでラップ)
   const checkSunoStatus = useCallback(async (order) => {
     if (!SUNO_API_KEY) return;
+
     try {
+      // タイムアウトチェック（4分 = 240秒）
+      if (order.songGenerationStartedAt) {
+        const startedAt = order.songGenerationStartedAt.toDate();
+        const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000;
+
+        if (elapsedSeconds > 240) {
+          await updateDoc(doc(db, "orders", order.id), {
+            status: "song_timeout",
+            sunoStatus: "TIMEOUT",
+            sunoErrorMessage: "Timed out waiting for Suno (4 minutes)",
+            songLastPolledAt: serverTimestamp()
+          });
+          return;
+        }
+      }
+
       // 正しいエンドポイント: /api/v1/generate/record-info?taskId=...
       const response = await fetch(`${SUNO_BASE_URL}/generate/record-info?taskId=${order.sunoTaskId}`, {
         headers: {
@@ -752,8 +896,31 @@ const AdminPage = ({ user }) => {
 
       const result = await response.json();
 
+      // 失敗判定
+      const dataStatus = result.data?.status;
+      const errorCode = result.data?.errorCode;
+      const errorMessage = result.data?.errorMessage;
+
+      if (
+        dataStatus === "GENERATE_AUDIO_FAILED" ||
+        dataStatus?.includes("FAILED") ||
+        dataStatus?.includes("ERROR") ||
+        errorCode != null ||
+        errorMessage != null
+      ) {
+        await updateDoc(doc(db, "orders", order.id), {
+          status: "song_failed",
+          sunoStatus: dataStatus || "FAILED",
+          sunoErrorCode: errorCode,
+          sunoErrorMessage: errorMessage || "Generation failed",
+          songFailedAt: serverTimestamp(),
+          songLastPolledAt: serverTimestamp()
+        });
+        return;
+      }
+
       // レスポンス構造: { code: 200, msg: "success", data: { taskId, status, response: { sunoData: [...] } } }
-      if (result.code === 200 && result.data?.status === "SUCCESS") {
+      if (result.code === 200 && dataStatus === "SUCCESS") {
         const sunoData = result.data.response?.sunoData || [];
 
         if (sunoData.length > 0) {
@@ -768,9 +935,16 @@ const AdminPage = ({ user }) => {
 
           await updateDoc(doc(db, "orders", order.id), {
             status: "song_generated",
-            generatedSongs: songs
+            sunoStatus: "SUCCESS",
+            generatedSongs: songs,
+            songLastPolledAt: serverTimestamp()
           });
         }
+      } else {
+        // ステータス更新（PENDING等）
+        await updateDoc(doc(db, "orders", order.id), {
+          songLastPolledAt: serverTimestamp()
+        });
       }
     } catch (error) {
       console.error("Suno polling error", error);
@@ -1027,7 +1201,12 @@ const AdminPage = ({ user }) => {
 
         await updateDoc(doc(db, "orders", order.id), {
           status: "generating_song",
-          sunoTaskId: taskId
+          sunoTaskId: taskId,
+          songGenerationStartedAt: serverTimestamp(),
+          sunoStatus: "PENDING",
+          sunoErrorCode: null,
+          sunoErrorMessage: null,
+          songLastPolledAt: serverTimestamp()
         });
         alert(`生成開始しました！(Task ID: ${taskId})\n完了まで自動で待機します...`);
       } else {
@@ -1134,6 +1313,57 @@ const AdminPage = ({ user }) => {
     }
   };
 
+  // Phase1: 動画アセット生成
+  const handleGenerateVideos = async (order) => {
+    if (!order.selectedSongUrl) {
+      alert("先に楽曲を選定してください");
+      return;
+    }
+
+    if (!confirm(`${order.targetName}様の動画アセットを生成しますか？\n\n- プレビュー音声（15秒）\n- フル動画（縦型1080x1920）\n\n※ 2-3分かかります`)) {
+      return;
+    }
+
+    try {
+      // ステータスを processing に更新
+      await updateDoc(doc(db, "orders", order.id), {
+        videoGenerationStatus: "processing",
+      });
+
+      // Callable Function 呼び出し
+      const generateVideoAssets = httpsCallable(functions, "generateVideoAssets");
+      await generateVideoAssets({ orderId: order.id });
+
+      alert("✅ 動画アセット生成が完了しました！");
+    } catch (error) {
+      console.error("動画生成エラー:", error);
+      alert("❌ 動画生成に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
+  // Phase1: 手動Paywall - 支払い済みにする
+  const handleMarkAsPaid = async (order) => {
+    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\n30日間フル動画へのアクセスが可能になります。`)) {
+      return;
+    }
+
+    try {
+      const paidAt = new Date();
+      const accessExpiresAt = new Date(paidAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+      await updateDoc(doc(db, "orders", order.id), {
+        paymentStatus: "paid",
+        paidAt: paidAt,
+        accessExpiresAt: accessExpiresAt,
+      });
+
+      alert("✅ 支払い済みに変更しました。\n\n30日間アクセス可能です。");
+    } catch (error) {
+      console.error("Paywall更新エラー:", error);
+      alert("❌ 更新に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
 
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
@@ -1234,19 +1464,55 @@ const AdminPage = ({ user }) => {
 
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-bold text-gray-700 mb-2">2. 楽曲生成 & 選定</h4>
+
+                  {/* 生成中 */}
                   {order.status === 'generating_song' ? (
                     <div className="text-center py-4 text-orange-600 font-bold animate-pulse">
                       生成中... 自動更新されます
                     </div>
+                  ) : order.status === 'song_failed' ? (
+                    /* 生成失敗 */
+                    <div className="bg-red-50 border border-red-300 p-3 rounded mb-2">
+                      <p className="text-red-700 font-bold mb-1">⚠️ 生成失敗</p>
+                      <p className="text-xs text-red-600 mb-2">
+                        {order.sunoErrorMessage || 'Suno API returned an error'}
+                      </p>
+                      {order.sunoErrorCode && (
+                        <p className="text-xs text-gray-600">Error Code: {order.sunoErrorCode}</p>
+                      )}
+                      <button
+                        onClick={() => handleGenerateSong(order)}
+                        className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 mt-2"
+                      >
+                        再生成 🔄
+                      </button>
+                    </div>
+                  ) : order.status === 'song_timeout' ? (
+                    /* タイムアウト */
+                    <div className="bg-yellow-50 border border-yellow-300 p-3 rounded mb-2">
+                      <p className="text-yellow-700 font-bold mb-1">⏱️ タイムアウト</p>
+                      <p className="text-xs text-yellow-600 mb-2">
+                        生成に4分以上かかりました。再度お試しください。
+                      </p>
+                      <button
+                        onClick={() => handleGenerateSong(order)}
+                        className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 mt-2"
+                      >
+                        再生成 🔄
+                      </button>
+                    </div>
                   ) : (
+                    /* 通常の生成ボタン */
                     <button
                       onClick={() => handleGenerateSong(order)}
-                      disabled={!order.generatedPrompt}
+                      disabled={!order.generatedPrompt || order.status === 'generating_song'}
                       className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 disabled:bg-gray-300 mb-2"
                     >
                       {order.sunoTaskId ? 'Sunoで再生成 🔄' : 'Sunoで生成開始 🎵'}
                     </button>
                   )}
+
+                  {/* 生成済み楽曲リスト */}
                   {order.generatedSongs && order.generatedSongs.length > 0 && (
                     <div className="space-y-3 mt-2">
                       {order.generatedSongs.map((song, idx) => (
@@ -1293,6 +1559,120 @@ const AdminPage = ({ user }) => {
                         MP3添付で送信 🚀
                       </button>
                     </>
+                  )}
+                </div>
+              </div>
+
+              {/* Phase1: 動画生成 & Paywall管理 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                {/* 動画生成セクション */}
+                <div className="bg-blue-50 p-4 rounded border border-blue-200">
+                  <h4 className="font-bold text-gray-700 mb-2">4. 動画生成 🎬</h4>
+
+                  {/* 生成状態表示 */}
+                  {order.videoGenerationStatus === "processing" && (
+                    <div className="text-center py-4 text-blue-600 font-bold animate-pulse mb-2">
+                      生成中... 2-3分お待ちください
+                    </div>
+                  )}
+
+                  {order.videoGenerationStatus === "failed" && (
+                    <div className="text-center py-2 text-red-600 text-sm mb-2">
+                      ❌ 生成失敗: {order.videoGenerationError}
+                    </div>
+                  )}
+
+                  {order.videoGenerationStatus === "completed" && (
+                    <div className="text-center py-2 text-green-600 text-sm font-bold mb-2">
+                      ✅ 生成完了
+                    </div>
+                  )}
+
+                  {/* 生成ボタン */}
+                  <button
+                    onClick={() => handleGenerateVideos(order)}
+                    disabled={!order.selectedSongUrl || order.videoGenerationStatus === "processing"}
+                    className="bg-purple-600 text-white w-full py-2 rounded shadow hover:bg-purple-700 disabled:bg-gray-300 mb-3"
+                  >
+                    {order.videoGenerationStatus === "completed" ? "動画を再生成 🔄" : "動画を生成 🎬"}
+                  </button>
+
+                  {/* プレビュー音声プレイヤー */}
+                  {order.previewAudioPath && (
+                    <div className="mt-2">
+                      <p className="text-xs font-bold text-gray-600 mb-1">プレビュー音声（15秒）:</p>
+                      <p className="text-xs text-gray-500 mb-1 break-all">{order.previewAudioPath}</p>
+                      <p className="text-xs text-yellow-600 mb-1">※ 署名URL方式のため、ここでは再生できません</p>
+                    </div>
+                  )}
+
+                  {/* フル動画パス */}
+                  {order.fullVideoPath && (
+                    <div className="mt-2">
+                      <p className="text-xs font-bold text-gray-600 mb-1">フル動画:</p>
+                      <p className="text-xs text-gray-500 break-all">{order.fullVideoPath}</p>
+                      <p className="text-xs text-yellow-600">※ 署名URL方式のため、ここでは再生できません</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Paywall管理セクション */}
+                <div className="bg-yellow-50 p-4 rounded border border-yellow-200">
+                  <h4 className="font-bold text-gray-700 mb-2">5. 課金状態 💰</h4>
+
+                  {/* 現在の状態表示 */}
+                  <div className="mb-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-sm font-bold text-gray-600">支払い状態:</span>
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${order.paymentStatus === 'paid' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                        {order.paymentStatus === 'paid' ? '✅ 支払い済み' : '未払い'}
+                      </span>
+                    </div>
+
+                    {order.paymentStatus === 'paid' && order.paidAt && (
+                      <div className="text-xs text-gray-600 space-y-1">
+                        <p>支払い日時: {order.paidAt.toDate ? order.paidAt.toDate().toLocaleString() : new Date(order.paidAt).toLocaleString()}</p>
+                        {order.accessExpiresAt && (() => {
+                          const expiresAt = order.accessExpiresAt.toDate ? order.accessExpiresAt.toDate() : new Date(order.accessExpiresAt);
+                          const now = new Date();
+                          const remainingMs = expiresAt.getTime() - now.getTime();
+                          const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+                          const isExpired = remainingMs < 0;
+
+                          return (
+                            <>
+                              <p>期限: {expiresAt.toLocaleString()}</p>
+                              <p className={isExpired ? 'text-red-600 font-bold' : 'text-green-600 font-bold'}>
+                                {isExpired ? '⚠️ 期限切れ' : `残り ${remainingDays} 日`}
+                              </p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 支払い済みにするボタン */}
+                  {order.paymentStatus !== 'paid' && (
+                    <button
+                      onClick={() => handleMarkAsPaid(order)}
+                      disabled={!order.fullVideoPath}
+                      className="bg-green-600 text-white w-full py-2 rounded shadow hover:bg-green-700 font-bold disabled:bg-gray-300"
+                    >
+                      支払い済みにする ✅
+                    </button>
+                  )}
+
+                  {order.paymentStatus === 'paid' && (
+                    <div className="text-center text-sm text-gray-500 py-2 bg-white rounded border">
+                      フル動画へのアクセス権を付与済みです
+                    </div>
+                  )}
+
+                  {!order.fullVideoPath && (
+                    <div className="text-xs text-gray-500 mt-2 text-center">
+                      ※ フル動画生成後に有効化できます
+                    </div>
                   )}
                 </div>
               </div>

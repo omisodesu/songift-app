@@ -1,10 +1,13 @@
-const {onRequest} = require("firebase-functions/v2/https");
+const {onRequest, onCall} = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
 const axios = require("axios");
 const crypto = require("crypto");
+const {Storage} = require("@google-cloud/storage");
+const {GoogleAuth} = require("google-auth-library");
 
 admin.initializeApp();
+const storage = new Storage();
 
 /**
  * レート制限チェック（Firestoreベース）
@@ -584,6 +587,14 @@ exports.getOrderByToken = onRequest({
       // 完成時のみ曲URLを含める
       selectedSongUrl: order.status === "completed" ? order.selectedSongUrl : null,
       generatedLyrics: order.status === "completed" || order.status === "song_generated" || order.status === "song_selected" ? order.generatedLyrics : null,
+      // Phase1: 動画生成関連フィールド
+      videoGenerationStatus: order.videoGenerationStatus || null,
+      previewAudioPath: order.previewAudioPath || null,
+      fullVideoPath: order.fullVideoPath || null,
+      // Phase1: Paywall関連フィールド
+      paymentStatus: order.paymentStatus || "unpaid",
+      paidAt: order.paidAt || null,
+      accessExpiresAt: order.accessExpiresAt || null,
     };
 
     res.status(200).json({
@@ -599,3 +610,313 @@ exports.getOrderByToken = onRequest({
     });
   }
 });
+
+// ============================================
+// Phase1: Video Generation & Signed URL Functions
+// ============================================
+
+/**
+ * generateVideoAssets - 動画アセット生成（Callable Function）
+ *
+ * 管理画面から呼び出し。Suno音声をStorageに保存してから、
+ * Cloud Runでプレビュー音声とフル動画を生成。
+ *
+ * 入力: { orderId: string }
+ * 出力: { success: boolean, message: string }
+ */
+exports.generateVideoAssets = onCall({
+  timeoutSeconds: 540, // 9分
+  memory: "1GiB",
+  secrets: ["VIDEO_GENERATOR_URL"],
+}, async (request) => {
+  const {orderId} = request.data;
+
+  if (!orderId) {
+    throw new Error("orderId is required");
+  }
+
+  console.log(`[generateVideoAssets] Starting for order: ${orderId}`);
+
+  try {
+    // 1. Firestore から order データ取得
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error(`Order not found: ${orderId}`);
+    }
+
+    const order = orderDoc.data();
+
+    if (!order.selectedSongUrl) {
+      throw new Error("selectedSongUrl is not set. Please select a song first.");
+    }
+
+    // 2. Suno音声URLをStorageにダウンロード保存
+    const sourceAudioPath = `audios/${orderId}/source.mp3`;
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+
+    console.log(`[generateVideoAssets] Downloading Suno audio from: ${order.selectedSongUrl}`);
+
+    const audioResponse = await axios.get(order.selectedSongUrl, {
+      responseType: "arraybuffer",
+      timeout: 60000, // 60秒タイムアウト
+    });
+
+    const audioBuffer = Buffer.from(audioResponse.data);
+
+    await bucket.file(sourceAudioPath).save(audioBuffer, {
+      metadata: {
+        contentType: "audio/mpeg",
+      },
+    });
+
+    console.log(`[generateVideoAssets] Saved source audio to: ${sourceAudioPath}`);
+
+    // Firestore更新: sourceAudioPath保存
+    await orderDoc.ref.update({
+      sourceAudioPath: sourceAudioPath,
+      videoGenerationStatus: "processing",
+    });
+
+    // 3. Cloud Run 認証設定（ID トークン）
+    const videoGeneratorUrl = process.env.VIDEO_GENERATOR_URL;
+    if (!videoGeneratorUrl) {
+      throw new Error("VIDEO_GENERATOR_URL is not configured");
+    }
+
+    const auth = new GoogleAuth();
+    const client = await auth.getIdTokenClient(videoGeneratorUrl);
+
+    // 4. Cloud Run /generate-preview-audio 呼び出し
+    const previewAudioPath = `audios/${orderId}/preview.mp3`;
+
+    console.log(`[generateVideoAssets] Calling Cloud Run: /generate-preview-audio`);
+
+    const previewResponse = await client.request({
+      url: `${videoGeneratorUrl}/generate-preview-audio`,
+      method: "POST",
+      data: {
+        sourceAudioPath: sourceAudioPath,
+        outputPath: previewAudioPath,
+      },
+      timeout: 300000, // 5分タイムアウト
+    });
+
+    if (!previewResponse.data.success) {
+      throw new Error(`Preview audio generation failed: ${previewResponse.data.error}`);
+    }
+
+    console.log(`[generateVideoAssets] Preview audio generated: ${previewAudioPath}`);
+
+    // Firestore更新: previewAudioPath保存
+    await orderDoc.ref.update({
+      previewAudioPath: previewAudioPath,
+    });
+
+    // 5. Cloud Run /generate-full-video 呼び出し
+    const fullVideoPath = `videos/${orderId}/full.mp4`;
+
+    console.log(`[generateVideoAssets] Calling Cloud Run: /generate-full-video`);
+
+    const videoResponse = await client.request({
+      url: `${videoGeneratorUrl}/generate-full-video`,
+      method: "POST",
+      data: {
+        sourceAudioPath: sourceAudioPath,
+        outputPath: fullVideoPath,
+        backgroundImagePath: "default",
+      },
+      timeout: 480000, // 8分タイムアウト
+    });
+
+    if (!videoResponse.data.success) {
+      throw new Error(`Full video generation failed: ${videoResponse.data.error}`);
+    }
+
+    console.log(`[generateVideoAssets] Full video generated: ${fullVideoPath}`);
+
+    // 6. Firestore更新: 完了
+    await orderDoc.ref.update({
+      fullVideoPath: fullVideoPath,
+      videoGenerationStatus: "completed",
+      videoGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[generateVideoAssets] Completed for order: ${orderId}`);
+
+    return {
+      success: true,
+      message: "動画アセット生成が完了しました",
+    };
+  } catch (error) {
+    console.error(`[generateVideoAssets] Error for order ${orderId}:`, error);
+
+    // Firestore更新: エラー
+    await admin.firestore().collection("orders").doc(orderId).update({
+      videoGenerationStatus: "failed",
+      videoGenerationError: error.message,
+    });
+
+    throw new Error(`動画アセット生成に失敗しました: ${error.message}`);
+  }
+});
+
+/**
+ * getPreviewSignedUrl - プレビュー音声の署名URL取得（Callable Function）
+ *
+ * 顧客画面から呼び出し。未課金でも発行可能。
+ *
+ * 入力: { orderId: string, token: string }
+ * 出力: { signedUrl: string }
+ */
+exports.getPreviewSignedUrl = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId, token} = request.data;
+
+  if (!orderId || !token) {
+    throw new Error("orderId and token are required");
+  }
+
+  console.log(`[getPreviewSignedUrl] Request for order: ${orderId}`);
+
+  try {
+    // 1. token 検証（getOrderByToken と同じロジック）
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error("注文が見つかりません");
+    }
+
+    const order = orderDoc.data();
+
+    if (order.tokenHash !== tokenHash) {
+      throw new Error("無効なトークンです");
+    }
+
+    if (order.tokenExpiresAt && order.tokenExpiresAt.toDate() < new Date()) {
+      throw new Error("トークンの有効期限が切れています");
+    }
+
+    // 2. previewAudioPath が存在するか確認
+    if (!order.previewAudioPath) {
+      throw new Error("プレビュー音声がまだ生成されていません");
+    }
+
+    // 3. 署名URL発行（有効時間: 20分）
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+
+    const [signedUrl] = await bucket.file(order.previewAudioPath).getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 20 * 60 * 1000, // 20分
+    });
+
+    console.log(`[getPreviewSignedUrl] Signed URL issued for: ${order.previewAudioPath}`);
+
+    return {
+      signedUrl: signedUrl,
+    };
+  } catch (error) {
+    console.error(`[getPreviewSignedUrl] Error for order ${orderId}:`, error);
+    throw new Error(error.message);
+  }
+});
+
+/**
+ * getFullSignedUrl - フル動画の署名URL取得（Callable Function）
+ *
+ * 顧客画面から呼び出し。paid + 期限内のときだけ発行。
+ *
+ * 入力: { orderId: string, token: string }
+ * 出力: { signedUrl: string, remainingDays: number } | { error: string, message: string }
+ */
+exports.getFullSignedUrl = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId, token} = request.data;
+
+  if (!orderId || !token) {
+    throw new Error("orderId and token are required");
+  }
+
+  console.log(`[getFullSignedUrl] Request for order: ${orderId}`);
+
+  try {
+    // 1. token 検証
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error("注文が見つかりません");
+    }
+
+    const order = orderDoc.data();
+
+    if (order.tokenHash !== tokenHash) {
+      throw new Error("無効なトークンです");
+    }
+
+    if (order.tokenExpiresAt && order.tokenExpiresAt.toDate() < new Date()) {
+      throw new Error("トークンの有効期限が切れています");
+    }
+
+    // 2. paymentStatus === "paid" チェック
+    if (order.paymentStatus !== "paid") {
+      throw new Error("unpaid:フル動画は課金後にご利用いただけます");
+    }
+
+    // 3. accessExpiresAt > now チェック
+    const now = new Date();
+    const accessExpiresAt = order.accessExpiresAt ? order.accessExpiresAt.toDate() : null;
+
+    if (!accessExpiresAt || accessExpiresAt < now) {
+      throw new Error("expired:アクセス期限が切れています");
+    }
+
+    // 4. fullVideoPath が存在するか確認
+    if (!order.fullVideoPath) {
+      throw new Error("フル動画がまだ生成されていません");
+    }
+
+    // 5. 署名URL発行（有効時間: 20分）
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+
+    // iPhone Safari でもダウンロード扱いにするため、responseDisposition を指定
+    const filename = `birthday_song_full_${orderId}.mp4`;
+    const [signedUrl] = await bucket.file(order.fullVideoPath).getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 20 * 60 * 1000, // 20分
+      responseDisposition: `attachment; filename="${filename}"`,
+      responseType: "video/mp4",
+    });
+
+    // 6. 残り日数計算
+    const remainingMs = accessExpiresAt.getTime() - now.getTime();
+    const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
+
+    console.log(`[getFullSignedUrl] Signed URL issued for: ${order.fullVideoPath}, remaining days: ${remainingDays}`);
+
+    return {
+      signedUrl: signedUrl,
+      remainingDays: remainingDays,
+    };
+  } catch (error) {
+    console.error(`[getFullSignedUrl] Error for order ${orderId}:`, error);
+
+    // エラーメッセージに "unpaid:" や "expired:" が含まれている場合はそのまま投げる
+    if (error.message.startsWith("unpaid:") || error.message.startsWith("expired:")) {
+      throw new Error(error.message);
+    }
+
+    throw new Error(error.message);
+  }
+});
+
