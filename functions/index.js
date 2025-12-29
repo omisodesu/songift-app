@@ -736,9 +736,15 @@ exports.generateVideoAssets = onCall({
 
     console.log(`[generateVideoAssets] Full video generated: ${fullVideoPath}`);
 
+    // duration情報を取得
+    const audioDurationSec = videoResponse.data.audioDurationSeconds || null;
+    const videoDurationSec = videoResponse.data.videoDurationSeconds || null;
+
     // 6. Firestore更新: 完了
     await orderDoc.ref.update({
       fullVideoPath: fullVideoPath,
+      fullVideoAudioDurationSec: audioDurationSec,
+      fullVideoDurationSec: videoDurationSec,
       videoGenerationStatus: "completed",
       videoGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -916,6 +922,116 @@ exports.getFullSignedUrl = onCall({
       throw new Error(error.message);
     }
 
+    throw new Error(error.message);
+  }
+});
+
+/**
+ * getAdminPreviewSignedUrl - 管理者向けプレビュー音声の署名URL取得（Callable Function）
+ *
+ * 管理画面から呼び出し。token/paid/accessExpiresAtチェックなし。
+ *
+ * 入力: { orderId: string }
+ * 出力: { signedUrl: string, expiresInSeconds: number }
+ */
+exports.getAdminPreviewSignedUrl = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId} = request.data;
+
+  if (!orderId) {
+    throw new Error("orderId is required");
+  }
+
+  console.log(`[getAdminPreviewSignedUrl] Request for order: ${orderId}`);
+
+  try {
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error("注文が見つかりません");
+    }
+
+    const order = orderDoc.data();
+
+    // previewAudioPath が存在するか確認
+    if (!order.previewAudioPath) {
+      throw new Error("プレビュー音声がまだ生成されていません");
+    }
+
+    // 署名URL発行（有効時間: 20分）
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+
+    const [signedUrl] = await bucket.file(order.previewAudioPath).getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 20 * 60 * 1000, // 20分
+    });
+
+    console.log(`[getAdminPreviewSignedUrl] Signed URL issued for: ${order.previewAudioPath}`);
+
+    return {
+      signedUrl: signedUrl,
+      expiresInSeconds: 1200,
+    };
+  } catch (error) {
+    console.error(`[getAdminPreviewSignedUrl] Error for order ${orderId}:`, error);
+    throw new Error(error.message);
+  }
+});
+
+/**
+ * getAdminFullSignedUrl - 管理者向けフル動画の署名URL取得（Callable Function）
+ *
+ * 管理画面から呼び出し。token/paid/accessExpiresAtチェックなし。
+ *
+ * 入力: { orderId: string }
+ * 出力: { signedUrl: string, expiresInSeconds: number }
+ */
+exports.getAdminFullSignedUrl = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId} = request.data;
+
+  if (!orderId) {
+    throw new Error("orderId is required");
+  }
+
+  console.log(`[getAdminFullSignedUrl] Request for order: ${orderId}`);
+
+  try {
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error("注文が見つかりません");
+    }
+
+    const order = orderDoc.data();
+
+    // fullVideoPath が存在するか確認
+    if (!order.fullVideoPath) {
+      throw new Error("フル動画がまだ生成されていません");
+    }
+
+    // 署名URL発行（有効時間: 20分）
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+
+    const [signedUrl] = await bucket.file(order.fullVideoPath).getSignedUrl({
+      version: "v4",
+      action: "read",
+      expires: Date.now() + 20 * 60 * 1000, // 20分
+    });
+
+    console.log(`[getAdminFullSignedUrl] Signed URL issued for: ${order.fullVideoPath}`);
+
+    return {
+      signedUrl: signedUrl,
+      expiresInSeconds: 1200,
+    };
+  } catch (error) {
+    console.error(`[getAdminFullSignedUrl] Error for order ${orderId}:`, error);
     throw new Error(error.message);
   }
 });

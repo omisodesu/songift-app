@@ -144,7 +144,8 @@ app.post('/generate-full-video', async (req, res) => {
     res.json({
       success: true,
       outputPath: outputPath,
-      durationSeconds: result.durationSeconds
+      audioDurationSeconds: result.audioDurationSeconds,
+      videoDurationSeconds: result.videoDurationSeconds
     });
 
   } catch (error) {

@@ -833,6 +833,9 @@ const AdminPage = ({ user }) => {
   const [editedLyrics, setEditedLyrics] = useState('');
   const [editedPrompt, setEditedPrompt] = useState('');
 
+  // 管理者向け署名URL管理
+  const [adminSignedUrls, setAdminSignedUrls] = useState({});
+
   // APIの設定 (修正: sunoapi.orgのBase URL)
   const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -1364,6 +1367,38 @@ const AdminPage = ({ user }) => {
     }
   };
 
+  // 管理者向けプレビュー音声の署名URL取得
+  const handleGetAdminPreviewUrl = async (orderId) => {
+    try {
+      const getAdminPreviewSignedUrl = httpsCallable(functions, "getAdminPreviewSignedUrl");
+      const result = await getAdminPreviewSignedUrl({ orderId });
+
+      setAdminSignedUrls(prev => ({
+        ...prev,
+        [`preview_${orderId}`]: result.data.signedUrl
+      }));
+    } catch (error) {
+      console.error("プレビューURL取得エラー:", error);
+      alert("❌ プレビューURL取得に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
+  // 管理者向けフル動画の署名URL取得
+  const handleGetAdminFullUrl = async (orderId) => {
+    try {
+      const getAdminFullSignedUrl = httpsCallable(functions, "getAdminFullSignedUrl");
+      const result = await getAdminFullSignedUrl({ orderId });
+
+      setAdminSignedUrls(prev => ({
+        ...prev,
+        [`full_${orderId}`]: result.data.signedUrl
+      }));
+    } catch (error) {
+      console.error("フル動画URL取得エラー:", error);
+      alert("❌ フル動画URL取得に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
 
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
@@ -1597,21 +1632,53 @@ const AdminPage = ({ user }) => {
                     {order.videoGenerationStatus === "completed" ? "動画を再生成 🔄" : "動画を生成 🎬"}
                   </button>
 
-                  {/* プレビュー音声プレイヤー */}
+                  {/* プレビュー音声確認 */}
                   {order.previewAudioPath && (
-                    <div className="mt-2">
-                      <p className="text-xs font-bold text-gray-600 mb-1">プレビュー音声（15秒）:</p>
-                      <p className="text-xs text-gray-500 mb-1 break-all">{order.previewAudioPath}</p>
-                      <p className="text-xs text-yellow-600 mb-1">※ 署名URL方式のため、ここでは再生できません</p>
+                    <div className="mt-3 bg-white p-3 rounded border">
+                      <p className="text-xs font-bold text-gray-700 mb-2">プレビュー音声（15秒）</p>
+                      <button
+                        onClick={() => handleGetAdminPreviewUrl(order.id)}
+                        className="bg-blue-500 text-white text-xs px-3 py-1 rounded hover:bg-blue-600 mb-2 w-full"
+                      >
+                        署名URL取得して再生 🔊
+                      </button>
+                      {adminSignedUrls[`preview_${order.id}`] && (
+                        <div>
+                          <audio controls src={adminSignedUrls[`preview_${order.id}`]} className="w-full mb-1" />
+                          <p className="text-xs text-gray-500">※ URL有効期限: 20分</p>
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* フル動画パス */}
+                  {/* フル動画確認 */}
                   {order.fullVideoPath && (
-                    <div className="mt-2">
-                      <p className="text-xs font-bold text-gray-600 mb-1">フル動画:</p>
-                      <p className="text-xs text-gray-500 break-all">{order.fullVideoPath}</p>
-                      <p className="text-xs text-yellow-600">※ 署名URL方式のため、ここでは再生できません</p>
+                    <div className="mt-3 bg-white p-3 rounded border">
+                      <p className="text-xs font-bold text-gray-700 mb-2">フル動画（1080x1920）</p>
+                      <button
+                        onClick={() => handleGetAdminFullUrl(order.id)}
+                        className="bg-purple-500 text-white text-xs px-3 py-1 rounded hover:bg-purple-600 mb-2 w-full"
+                      >
+                        署名URL取得して再生 🎬
+                      </button>
+                      {adminSignedUrls[`full_${order.id}`] && (
+                        <div>
+                          <video controls src={adminSignedUrls[`full_${order.id}`]} className="w-full mb-1" style={{maxHeight: '300px'}} />
+                          <a
+                            href={adminSignedUrls[`full_${order.id}`]}
+                            download={`birthday_song_full_${order.id}.mp4`}
+                            className="text-xs text-blue-600 underline block mb-1"
+                          >
+                            ダウンロード 📥
+                          </a>
+                          <p className="text-xs text-gray-500">※ URL有効期限: 20分</p>
+                          {order.fullVideoAudioDurationSec && order.fullVideoDurationSec && (
+                            <p className="text-xs text-gray-600 mt-2">
+                              Audio: {order.fullVideoAudioDurationSec.toFixed(1)}s / Video: {order.fullVideoDurationSec.toFixed(1)}s
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
