@@ -35,6 +35,10 @@ class VideoService {
         const audioDuration = await this.getAudioDuration(audioPath);
         console.log(`Audio duration: ${audioDuration} seconds`);
 
+        // 動画の長さ = 音声の長さ + 1秒
+        const videoDuration = audioDuration + 1.0;
+        console.log(`Target video duration: ${videoDuration} seconds`);
+
         // 出力ディレクトリ作成
         const outputDir = path.dirname(outputPath);
         await fs.mkdir(outputDir, { recursive: true });
@@ -53,7 +57,7 @@ class VideoService {
             '-c:a aac',  // AAC 音声コーデック
             '-b:a 192k',  // 音声ビットレート
             '-pix_fmt yuv420p',  // ピクセルフォーマット（互換性）
-            '-shortest',  // 音声の長さに合わせる
+            `-t ${videoDuration}`,  // 動画の長さを明示的に指定
             '-vf scale=1080:1920',  // 縦型1080x1920にリサイズ
           ])
           .format('mp4')
@@ -69,7 +73,8 @@ class VideoService {
             console.log('Full video generation completed');
             resolve({
               outputPath: outputPath,
-              durationSeconds: Math.floor(audioDuration)
+              audioDurationSeconds: audioDuration,
+              videoDurationSeconds: videoDuration
             });
           })
           .on('error', (err) => {
