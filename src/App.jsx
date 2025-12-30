@@ -467,7 +467,7 @@ const OrderPage = ({ user = null }) => {
           )}
 
           <button type="submit" disabled={loading} className={`w-full py-4 rounded-lg font-bold text-white text-xl shadow hover:opacity-90 transition ${plan === 'simple' ? 'bg-pink-500' : 'bg-indigo-600'}`}>
-            {loading ? '送信中...' : 'この内容で注文する（¥500）'}
+            {loading ? '送信中...' : 'この内容で申し込む'}
           </button>
         </form>
       </div>
@@ -488,9 +488,7 @@ const OrderConfirmPage = () => {
 
   // Phase1: 署名URL管理
   const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
-  const [fullSignedUrl, setFullSignedUrl] = useState(null);
-  const [fullVideoError, setFullVideoError] = useState(null);
-  const [remainingDays, setRemainingDays] = useState(null);
+  const [paymentLoading, setPaymentLoading] = useState(false);
 
   useEffect(() => {
     const fetchOrder = async () => {
@@ -542,34 +540,33 @@ const OrderConfirmPage = () => {
     }
   }, [order, orderId, token]);
 
-  // Phase1: フル動画の署名URL取得
-  useEffect(() => {
-    if (order && order.paymentStatus === 'paid' && order.fullVideoPath) {
-      const fetchFullSignedUrl = async () => {
-        try {
-          const getFullSignedUrl = httpsCallable(functions, "getFullSignedUrl");
-          const result = await getFullSignedUrl({ orderId, token });
-          setFullSignedUrl(result.data.signedUrl);
-          setRemainingDays(result.data.remainingDays);
-          setFullVideoError(null);
-        } catch (err) {
-          console.error("Full signed URL error:", err);
-          // エラーメッセージから期限切れかどうかを判定
-          if (err.message && err.message.includes("expired:")) {
-            setFullVideoError("expired");
-          } else {
-            setFullVideoError(err.message);
-          }
-        }
-      };
-      fetchFullSignedUrl();
-    }
-  }, [order, orderId, token]);
+  // 支払い処理ハンドラ
+  const handlePayment = async () => {
+    if (!window.confirm('¥500の支払いを完了しますか？')) return;
 
-  // Phase1: 期限切れチェック（パターンA）
-  const isPaid = order?.paymentStatus === 'paid';
-  const isExpired = isPaid && order?.accessExpiresAt &&
-    new Date(order.accessExpiresAt.seconds * 1000) < new Date();
+    setPaymentLoading(true);
+    try {
+      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const response = await fetch(`${functionsUrl}/processPayment`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({orderId: order.id}),
+      });
+
+      if (!response.ok) throw new Error('支払い処理に失敗しました');
+
+      alert('支払いが完了しました！MP4動画をメールでお送りします。');
+      window.location.reload(); // ページをリロードして支払い完了状態を表示
+    } catch (error) {
+      console.error('Payment error:', error);
+      alert('支払い処理に失敗しました。管理者にお問い合わせください。');
+    } finally {
+      setPaymentLoading(false);
+    }
+  };
+
+  // Phase1: 支払い状態チェック
+  const isPaid = order?.isPaid || false;
 
   if (loading) {
     return (
@@ -597,25 +594,6 @@ const OrderConfirmPage = () => {
     );
   }
 
-  // Phase1: 期限切れ専用画面（パターンA）
-  if (isExpired) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="max-w-md w-full bg-white p-8 rounded-xl shadow text-center">
-          <div className="text-yellow-500 text-6xl mb-4">🔒</div>
-          <h2 className="text-2xl font-bold text-gray-800 mb-4">リンクの有効期限が切れました</h2>
-          <p className="text-gray-600 mb-2">このリンクは発行から30日で期限切れになります。</p>
-          <p className="text-gray-600 mb-6">必要な場合はトップページから再度お試しください。</p>
-          <button
-            onClick={() => navigate("/")}
-            className="inline-block bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600"
-          >
-            トップページへ戻る
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   const getStatusDisplay = (status) => {
     switch (status) {
@@ -716,43 +694,31 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
-        {/* Phase1: Paywallメッセージ（未課金時） */}
-        {order.videoGenerationStatus === 'completed' && order.paymentStatus !== 'paid' && (
-          <div className="mb-8 p-6 bg-gray-100 rounded-lg border-2 border-gray-300">
-            <h3 className="font-bold text-gray-800 mb-3 text-lg">🔒 フル動画を視聴するには</h3>
-            <p className="text-gray-700 mb-2">フル動画（約3分、縦型1080x1920）をご覧いただくには、管理者にお問い合わせください。</p>
-            <p className="text-sm text-gray-500">※ Phase2でオンライン決済機能を実装予定です</p>
+        {/* 支払いボタン（未払い時のみ表示） */}
+        {!isPaid && order.previewAudioPath && (
+          <div className="mb-8 p-6 bg-yellow-50 rounded-lg border-2 border-yellow-300">
+            <h3 className="font-bold text-yellow-800 mb-4 text-lg">💳 お支払い</h3>
+            <p className="text-sm text-gray-700 mb-4">
+              フル動画（MP4）をメールでお届けします。
+            </p>
+            <button
+              onClick={handlePayment}
+              disabled={paymentLoading}
+              className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50"
+            >
+              {paymentLoading ? '処理中...' : '¥500を支払う'}
+            </button>
           </div>
         )}
 
-        {/* Phase1: フル動画セクション（課金後のみ） */}
-        {order.paymentStatus === 'paid' && !isExpired && order.fullVideoPath && (
-          <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-purple-800 text-lg">🎬 フル動画（縦型1080x1920）</h3>
-              {remainingDays !== null && (
-                <span className="text-sm font-bold text-purple-600">残り {remainingDays} 日</span>
-              )}
-            </div>
-
-            {fullSignedUrl && (
-              <>
-                <video controls src={fullSignedUrl} className="w-full mb-4 rounded" style={{ maxHeight: '600px' }} />
-                <a
-                  href={fullSignedUrl}
-                  download="birthday_song.mp4"
-                  className="block w-full text-center bg-purple-600 text-white py-3 rounded-lg hover:bg-purple-700 font-bold"
-                >
-                  動画をダウンロード
-                </a>
-              </>
-            )}
-
-            {fullVideoError && fullVideoError !== 'expired' && (
-              <div className="text-center py-4 text-red-600">
-                <p>エラー: {fullVideoError}</p>
-              </div>
-            )}
+        {/* 支払い完了メッセージ（支払い済みの場合） */}
+        {isPaid && (
+          <div className="mb-8 p-6 bg-green-50 rounded-lg border-2 border-green-200">
+            <h3 className="font-bold text-green-800 mb-4 text-lg">✅ お支払い完了</h3>
+            <p className="text-sm text-gray-700">
+              フル動画（MP4）をメールでお送りしました。<br />
+              メールをご確認ください。
+            </p>
           </div>
         )}
 
@@ -1230,19 +1196,62 @@ const AdminPage = ({ user }) => {
     });
   };
 
-  const handleGenerateEmail = async (order) => {
-    if (!GEMINI_API_KEY) return;
+  // プレビュー案内メール文面生成
+  const handleGeneratePreviewEmail = async (order) => {
+    if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
     const prompt = `
-      以下の顧客への「バースデーソング納品メール」の文面を作成してください。
-      顧客名: ${order.targetName} 様
-      プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
-      曲の雰囲気: ${order.mood || order.proGenre}
+      以下の顧客への「バースデーソング15秒プレビュー案内メール」の文面を作成してください。
 
-      条件:
+      顧客情報:
+      - お名前: ${order.customerName || order.userEmail}
+      - 誕生日の方: ${order.targetName} 様
+      - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
+
+      メール要件:
+      - 件名は「【Songift】バースデーソングのプレビューが完成しました」
+      - 本文は期待感を高めるトーンで
+      - 「15秒のプレビューをこちらのページでご確認いただけます: ${window.location.origin}/o/${order.id}?t=${order.accessToken}」と案内
+      - 「気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください」と記載
+      - 「お支払い確認後、フル動画（MP4）をメールでお届けします」と記載
+      - 署名: Songift運営チーム
+    `;
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      await updateDoc(doc(db, "orders", order.id), {
+        previewEmailBody: text
+      });
+      alert("プレビューメール文面を生成しました");
+    } catch (e) {
+      console.error("Preview email generation error:", e);
+      alert("メール生成エラー");
+    }
+  };
+
+  // MP4納品メール文面生成
+  const handleGenerateDeliveryEmail = async (order) => {
+    if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
+    const prompt = `
+      以下の顧客への「バースデーソングMP4動画納品メール」の文面を作成してください。
+
+      顧客情報:
+      - お名前: ${order.customerName || order.userEmail}
+      - 誕生日の方: ${order.targetName} 様
+      - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
+
+      メール要件:
       - 件名は「【Songift】世界に一つのバースデーソングをお届けします」
-      - 本文は感動的で温かいトーン
-      - 「添付のMP3ファイルをダウンロードしてお聞きください」という案内を入れる
-      - URL案内はしない（ファイル添付のため）
+      - お支払いいただきありがとうございますの感謝の言葉
+      - 添付のMP4ファイルをダウンロードしてご覧くださいと案内
+      - 縦型動画（1080x1920）なのでスマホでの再生に最適です
+      - 署名: Songift運営チーム
     `;
 
     try {
@@ -1257,21 +1266,63 @@ const AdminPage = ({ user }) => {
       await updateDoc(doc(db, "orders", order.id), {
         deliveryEmailBody: text
       });
+      alert("MP4納品メール文面を生成しました");
     } catch (e) {
+      console.error("Delivery email generation error:", e);
       alert("メール生成エラー");
     }
   };
 
-  const handleSendDelivery = async (order) => {
-    if (!order.selectedSongUrl) return alert("楽曲が選定されていません");
+  // プレビュー案内メール送信
+  const handleSendPreviewEmail = async (order) => {
+    if (!order.previewEmailBody) return alert("プレビューメール文面が生成されていません");
+    if (!confirm("プレビュー案内メールを送信します。よろしいですか？")) return;
+
+    try {
+      await updateDoc(doc(db, "orders", order.id), {previewEmailStatus: "sending"});
+
+      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const response = await fetch(`${functionsUrl}/sendPreviewEmail`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          orderId: order.id,
+          recipientEmail: order.userEmail,
+          recipientName: order.customerName || order.userEmail,
+          emailBody: order.previewEmailBody,
+        }),
+      });
+
+      if (!response.ok) throw new Error('メール送信に失敗しました');
+
+      alert(`✅ プレビュー案内メールを送信しました！\n\n送信先: ${order.userEmail}`);
+      window.location.reload();
+    } catch (error) {
+      console.error("Preview email send error:", error);
+      await updateDoc(doc(db, "orders", order.id), {
+        previewEmailStatus: "error",
+        previewEmailError: error.message
+      });
+      alert("メール送信エラー: " + error.message);
+    }
+  };
+
+  // MP4納品メール送信（processPaymentで自動送信されるため、ここでは使わない）
+  const handleSendDeliveryMP4 = async (order) => {
+    if (!order.fullVideoPath) return alert("フル動画が生成されていません");
     if (!order.deliveryEmailBody) return alert("メール文面が生成されていません");
-    if (!confirm("MP3ファイルを添付してメールを自動送信します。よろしいですか？")) return;
+    if (!confirm("MP4ファイルを添付してメールを自動送信します。よろしいですか？")) return;
 
     try {
       // ステータスを送信中に更新
       await updateDoc(doc(db, "orders", order.id), {
         deliveryStatus: "sending"
       });
+
+      // フル動画MP4の署名URL取得
+      const getAdminFullSignedUrl = httpsCallable(functions, "getAdminFullSignedUrl");
+      const urlResult = await getAdminFullSignedUrl({ orderId: order.id });
+      const mp4Url = urlResult.data.signedUrl;
 
       // Cloud Functionを呼び出し
       const functionUrl = `${import.meta.env.VITE_FUNCTIONS_BASE_URL}/sendBirthdaySongEmail`;
@@ -1285,7 +1336,7 @@ const AdminPage = ({ user }) => {
           orderId: order.id,
           recipientEmail: order.userEmail,
           recipientName: order.targetName,
-          mp3Url: order.selectedSongUrl,
+          mp4Url: mp4Url,
           emailBody: order.deliveryEmailBody,
         }),
       });
@@ -1346,24 +1397,48 @@ const AdminPage = ({ user }) => {
 
   // Phase1: 手動Paywall - 支払い済みにする
   const handleMarkAsPaid = async (order) => {
-    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\n30日間フル動画へのアクセスが可能になります。`)) {
+    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\nMP4動画をメールでお送りします。`)) {
       return;
     }
 
     try {
-      const paidAt = new Date();
-      const accessExpiresAt = new Date(paidAt.getTime() + 30 * 24 * 60 * 60 * 1000);
-
       await updateDoc(doc(db, "orders", order.id), {
-        paymentStatus: "paid",
-        paidAt: paidAt,
-        accessExpiresAt: accessExpiresAt,
+        isPaid: true,
+        paidAt: new Date(),
       });
 
-      alert("✅ 支払い済みに変更しました。\n\n30日間アクセス可能です。");
+      alert("✅ 支払い済みに変更しました。\n\n※ 顧客ページの支払いボタンからMP4メールを自動送信できます。");
     } catch (error) {
       console.error("Paywall更新エラー:", error);
       alert("❌ 更新に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
+  // 返金処理
+  const handleRefund = async (order) => {
+    if (!window.confirm(`${order.targetName}様の注文を返金しますか？isPaid=falseに戻り、返金通知メールが送信されます。`)) {
+      return;
+    }
+
+    try {
+      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const response = await fetch(`${functionsUrl}/processRefund`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          orderId: order.id,
+          recipientEmail: order.userEmail,
+          recipientName: order.targetName,
+        }),
+      });
+
+      if (!response.ok) throw new Error('返金処理に失敗しました');
+
+      alert('✅ 返金処理が完了し、通知メールを送信しました。');
+      window.location.reload(); // ページをリロードして最新状態を表示
+    } catch (error) {
+      console.error('Refund error:', error);
+      alert('❌ 返金処理に失敗しました: ' + error.message);
     }
   };
 
@@ -1571,38 +1646,8 @@ const AdminPage = ({ user }) => {
                   )}
                 </div>
 
-                <div className="bg-gray-50 p-4 rounded border">
-                  <h4 className="font-bold text-gray-700 mb-2">3. メール作成 & 納品</h4>
-                  {!order.deliveryEmailBody ? (
-                    <button
-                      onClick={() => handleGenerateEmail(order)}
-                      disabled={!order.selectedSongUrl}
-                      className="bg-blue-600 text-white w-full py-2 rounded shadow hover:bg-blue-700 disabled:bg-gray-300"
-                    >
-                      文面作成 📝
-                    </button>
-                  ) : (
-                    <>
-                      <textarea
-                        className="w-full h-32 text-xs border p-2 rounded mb-2"
-                        defaultValue={order.deliveryEmailBody}
-                      />
-                      <button
-                        onClick={() => handleSendDelivery(order)}
-                        className="bg-green-600 text-white w-full py-2 rounded shadow hover:bg-green-700 font-bold"
-                      >
-                        MP3添付で送信 🚀
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Phase1: 動画生成 & Paywall管理 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                {/* 動画生成セクション */}
                 <div className="bg-blue-50 p-4 rounded border border-blue-200">
-                  <h4 className="font-bold text-gray-700 mb-2">4. 動画生成 🎬</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">3. 動画生成 🎬</h4>
 
                   {/* 生成状態表示 */}
                   {order.videoGenerationStatus === "processing" && (
@@ -1683,63 +1728,117 @@ const AdminPage = ({ user }) => {
                   )}
                 </div>
 
-                {/* Paywall管理セクション */}
-                <div className="bg-yellow-50 p-4 rounded border border-yellow-200">
-                  <h4 className="font-bold text-gray-700 mb-2">5. 課金状態 💰</h4>
+                <div className="bg-gray-50 p-4 rounded border">
+                  <h4 className="font-semibold mb-3">4. メール管理</h4>
 
-                  {/* 現在の状態表示 */}
-                  <div className="mb-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-sm font-bold text-gray-600">支払い状態:</span>
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${order.paymentStatus === 'paid' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
-                        {order.paymentStatus === 'paid' ? '✅ 支払い済み' : '未払い'}
-                      </span>
-                    </div>
-
-                    {order.paymentStatus === 'paid' && order.paidAt && (
-                      <div className="text-xs text-gray-600 space-y-1">
-                        <p>支払い日時: {order.paidAt.toDate ? order.paidAt.toDate().toLocaleString() : new Date(order.paidAt).toLocaleString()}</p>
-                        {order.accessExpiresAt && (() => {
-                          const expiresAt = order.accessExpiresAt.toDate ? order.accessExpiresAt.toDate() : new Date(order.accessExpiresAt);
-                          const now = new Date();
-                          const remainingMs = expiresAt.getTime() - now.getTime();
-                          const remainingDays = Math.ceil(remainingMs / (24 * 60 * 60 * 1000));
-                          const isExpired = remainingMs < 0;
-
-                          return (
-                            <>
-                              <p>期限: {expiresAt.toLocaleString()}</p>
-                              <p className={isExpired ? 'text-red-600 font-bold' : 'text-green-600 font-bold'}>
-                                {isExpired ? '⚠️ 期限切れ' : `残り ${remainingDays} 日`}
-                              </p>
-                            </>
-                          );
-                        })()}
-                      </div>
+                  {/* プレビュー案内メール */}
+                  <div className="mb-4 p-3 bg-blue-50 rounded">
+                    <p className="font-medium mb-2 text-sm">📧 プレビュー案内メール</p>
+                    {!order.previewEmailBody ? (
+                      <button
+                        onClick={() => handleGeneratePreviewEmail(order)}
+                        disabled={!order.previewAudioPath}
+                        className="text-sm bg-blue-500 text-white px-3 py-2 rounded disabled:opacity-50 w-full"
+                      >
+                        文面生成 📝
+                      </button>
+                    ) : (
+                      <>
+                        <textarea
+                          value={order.previewEmailBody}
+                          readOnly
+                          className="w-full h-32 text-xs p-2 border rounded mb-2 bg-white"
+                        />
+                        {order.previewEmailStatus !== 'sent' ? (
+                          <button
+                            onClick={() => handleSendPreviewEmail(order)}
+                            className="text-sm bg-blue-600 text-white px-3 py-2 rounded w-full"
+                          >
+                            プレビュー案内送信 📨
+                          </button>
+                        ) : (
+                          <p className="text-xs text-green-600">✅ 送信済み</p>
+                        )}
+                      </>
                     )}
                   </div>
 
-                  {/* 支払い済みにするボタン */}
-                  {order.paymentStatus !== 'paid' && (
-                    <button
-                      onClick={() => handleMarkAsPaid(order)}
-                      disabled={!order.fullVideoPath}
-                      className="bg-green-600 text-white w-full py-2 rounded shadow hover:bg-green-700 font-bold disabled:bg-gray-300"
-                    >
-                      支払い済みにする ✅
-                    </button>
+                  {/* MP4納品メール */}
+                  <div className="p-3 bg-green-50 rounded">
+                    <p className="font-medium mb-2 text-sm">🎬 MP4納品メール</p>
+                    {!order.deliveryEmailBody ? (
+                      <button
+                        onClick={() => handleGenerateDeliveryEmail(order)}
+                        disabled={!order.fullVideoPath}
+                        className="text-sm bg-green-500 text-white px-3 py-2 rounded disabled:opacity-50 w-full"
+                      >
+                        文面生成 📝
+                      </button>
+                    ) : (
+                      <>
+                        <textarea
+                          value={order.deliveryEmailBody}
+                          readOnly
+                          className="w-full h-32 text-xs p-2 border rounded mb-2 bg-white"
+                        />
+                        {order.deliveryStatus === 'sent' ? (
+                          <p className="text-xs text-green-600">✅ 送信済み</p>
+                        ) : (
+                          <p className="text-xs text-gray-500">
+                            ※ 顧客ページの支払いボタン押下時に自動送信されます
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Phase1: Paywall管理 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                {/* Paywall管理セクション */}
+                <div className="bg-yellow-50 p-4 rounded border border-yellow-200">
+                  <h4 className="font-semibold mb-3">5. 💰 Paywall（支払い管理）</h4>
+
+                  <div className="mb-2">
+                    <span className="font-medium">支払いステータス: </span>
+                    {order.isPaid ? (
+                      <span className="text-green-600 font-bold">✅ 支払い済み</span>
+                    ) : (
+                      <span className="text-red-600 font-bold">❌ 未払い</span>
+                    )}
+                  </div>
+
+                  {order.isPaid && order.paidAt && (
+                    <p className="text-xs text-gray-600 mb-3">
+                      支払い日時: {order.paidAt.toDate ? order.paidAt.toDate().toLocaleString('ja-JP') : new Date(order.paidAt).toLocaleString('ja-JP')}
+                    </p>
                   )}
 
-                  {order.paymentStatus === 'paid' && (
-                    <div className="text-center text-sm text-gray-500 py-2 bg-white rounded border">
-                      フル動画へのアクセス権を付与済みです
-                    </div>
-                  )}
+                  <div className="flex gap-2">
+                    {!order.isPaid && (
+                      <button
+                        onClick={() => handleMarkAsPaid(order)}
+                        className="text-sm bg-green-500 text-white px-3 py-2 rounded flex-1"
+                      >
+                        手動で支払い完了にする
+                      </button>
+                    )}
 
-                  {!order.fullVideoPath && (
-                    <div className="text-xs text-gray-500 mt-2 text-center">
-                      ※ フル動画生成後に有効化できます
-                    </div>
+                    {order.isPaid && (
+                      <button
+                        onClick={() => handleRefund(order)}
+                        className="text-sm bg-red-500 text-white px-3 py-2 rounded flex-1"
+                      >
+                        返金する
+                      </button>
+                    )}
+                  </div>
+
+                  {order.refundedAt && (
+                    <p className="text-xs text-orange-600 mt-2">
+                      ⚠️ 返金済み ({order.refundedAt.toDate ? order.refundedAt.toDate().toLocaleString('ja-JP') : new Date(order.refundedAt).toLocaleString('ja-JP')})
+                    </p>
                   )}
                 </div>
               </div>

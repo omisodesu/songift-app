@@ -383,29 +383,35 @@ exports.sendBirthdaySongEmail = onRequest({
   }
 
   try {
-    const {orderId, recipientEmail, recipientName, mp3Url, emailBody} = req.body;
+    const {orderId, recipientEmail, recipientName, mp4Url, emailBody} = req.body;
 
     // パラメータ検証
-    if (!orderId || !recipientEmail || !recipientName || !mp3Url || !emailBody) {
+    if (!orderId || !recipientEmail || !recipientName || !mp4Url || !emailBody) {
       res.status(400).json({
         error: "必須パラメータが不足しています",
-        required: ["orderId", "recipientEmail", "recipientName", "mp3Url", "emailBody"],
+        required: ["orderId", "recipientEmail", "recipientName", "mp4Url", "emailBody"],
       });
       return;
     }
 
     console.log(`Processing email for order ${orderId}`);
 
-    // MP3ファイルをダウンロード
-    console.log(`Downloading MP3 from: ${mp3Url}`);
-    const mp3Response = await axios.get(mp3Url, {
+    // MP4ファイルをダウンロード
+    console.log(`Downloading MP4 from: ${mp4Url}`);
+    const mp4Response = await axios.get(mp4Url, {
       responseType: "arraybuffer",
+      timeout: 120000, // 120秒（MP4ファイルは大きいため）
     });
 
-    const mp3Buffer = Buffer.from(mp3Response.data);
-    const mp3Base64 = mp3Buffer.toString("base64");
+    const mp4Buffer = Buffer.from(mp4Response.data);
+    const mp4Base64 = mp4Buffer.toString("base64");
 
-    console.log(`MP3 downloaded, size: ${mp3Buffer.length} bytes`);
+    // サイズチェック
+    const fileSizeMB = mp4Buffer.length / (1024 * 1024);
+    console.log(`MP4 downloaded, size: ${fileSizeMB.toFixed(2)}MB`);
+    if (fileSizeMB > 25) {
+      console.warn(`⚠️ MP4 file size is large: ${fileSizeMB.toFixed(2)}MB (SendGrid limit: 30MB)`);
+    }
 
     // SendGrid設定
     const sendgridApiKey = process.env.SENDGRID_API_KEY;
@@ -437,9 +443,9 @@ exports.sendBirthdaySongEmail = onRequest({
         html: emailBody.replace(/\n/g, "<br>"),
         attachments: [
           {
-            content: mp3Base64,
-            filename: `birthday_song_${recipientName}.mp3`,
-            type: "audio/mpeg",
+            content: mp4Base64,
+            filename: `birthday_song_${recipientName}.mp4`,
+            type: "video/mp4",
             disposition: "attachment",
           },
         ],
@@ -491,6 +497,71 @@ exports.sendBirthdaySongEmail = onRequest({
       error: "メール送信に失敗しました",
       message: error.message,
     });
+  }
+});
+
+/**
+ * プレビュー案内メール送信
+ */
+exports.sendPreviewEmail = onRequest({
+  cors: true,
+  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+}, async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {orderId, recipientEmail, recipientName, emailBody} = req.body;
+
+    if (!orderId || !recipientEmail || !recipientName || !emailBody) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["orderId", "recipientEmail", "recipientName", "emailBody"],
+      });
+      return;
+    }
+
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    if (!sendgridApiKey) throw new Error("SENDGRID_API_KEY is not configured");
+    sgMail.setApiKey(sendgridApiKey.trim());
+
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${recipientName}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
+
+    if (!emailDestination.shouldSkip) {
+      const msg = {
+        to: emailDestination.to,
+        from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+      };
+      await sgMail.send(msg);
+      console.log(`[sendPreviewEmail] Email sent to ${emailDestination.to}`);
+    }
+
+    await admin.firestore().collection("orders").doc(orderId).update({
+      previewEmailStatus: "sent",
+      previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({success: true, message: "プレビュー案内メールを送信しました"});
+  } catch (error) {
+    console.error("[sendPreviewEmail] Error:", error);
+    if (req.body.orderId) {
+      await admin.firestore().collection("orders").doc(req.body.orderId).update({
+        previewEmailStatus: "error",
+        previewEmailError: error.message,
+      });
+    }
+    res.status(500).json({error: "メール送信に失敗しました", message: error.message});
   }
 });
 
@@ -1033,6 +1104,278 @@ exports.getAdminFullSignedUrl = onCall({
   } catch (error) {
     console.error(`[getAdminFullSignedUrl] Error for order ${orderId}:`, error);
     throw new Error(error.message);
+  }
+});
+
+/**
+ * 支払い処理（顧客ページから呼び出される）
+ * - isPaidをtrueに更新
+ * - MP4動画をメール送信
+ */
+exports.processPayment = onRequest({
+  cors: true,
+  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+}, async (req, res) => {
+  // CORSヘッダー設定
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {orderId} = req.body;
+
+    if (!orderId) {
+      res.status(400).json({error: "orderIdが必要です"});
+      return;
+    }
+
+    console.log(`[processPayment] Processing payment for order ${orderId}`);
+
+    // 1. 注文情報取得
+    const orderRef = admin.firestore().collection("orders").doc(orderId);
+    const orderDoc = await orderRef.get();
+
+    if (!orderDoc.exists) {
+      res.status(404).json({error: "注文が見つかりません"});
+      return;
+    }
+
+    const order = orderDoc.data();
+
+    // 既に支払い済みの場合はスキップ
+    if (order.isPaid) {
+      console.log(`[processPayment] Order ${orderId} is already paid`);
+      res.status(200).json({success: true, message: "既に支払い済みです"});
+      return;
+    }
+
+    // フル動画が存在するか確認
+    if (!order.fullVideoPath) {
+      res.status(400).json({error: "フル動画がまだ生成されていません"});
+      return;
+    }
+
+    // 2. Firestore更新: isPaid = true
+    await orderRef.update({
+      isPaid: true,
+      paidAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[processPayment] Order ${orderId} marked as paid`);
+
+    // 3. フル動画MP4の署名URL取得
+    const bucket = admin.storage().bucket();
+    const fullVideoFile = bucket.file(order.fullVideoPath);
+
+    const [fullVideoUrl] = await fullVideoFile.getSignedUrl({
+      action: "read",
+      expires: Date.now() + 10 * 60 * 1000, // 10分間有効
+    });
+
+    console.log(`[processPayment] Generated signed URL for full video`);
+
+    // 4. MP4納品メール送信
+    // まずメール本文を取得（管理画面で事前生成されている想定）
+    const emailBody = order.deliveryEmailBody || `
+${order.targetName} 様
+
+お支払いいただきありがとうございます。
+世界に一つのバースデーソングをお届けします。
+
+添付のMP4ファイルをダウンロードしてご覧ください。
+縦型動画（1080x1920）なのでスマホでの再生に最適です。
+
+Songift運営チーム
+    `.trim();
+
+    // SendGrid設定
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    if (!sendgridApiKey) {
+      throw new Error("SENDGRID_API_KEY is not configured");
+    }
+
+    sgMail.setApiKey(sendgridApiKey.trim());
+
+    // MP4ダウンロード
+    const mp4Response = await axios.get(fullVideoUrl, {
+      responseType: "arraybuffer",
+      timeout: 120000,
+    });
+
+    const mp4Buffer = Buffer.from(mp4Response.data);
+    const mp4Base64 = mp4Buffer.toString("base64");
+
+    const fileSizeMB = mp4Buffer.length / (1024 * 1024);
+    console.log(`[processPayment] MP4 size: ${fileSizeMB.toFixed(2)}MB`);
+
+    if (fileSizeMB > 25) {
+      console.warn(`[processPayment] ⚠️ MP4 file size is large: ${fileSizeMB.toFixed(2)}MB`);
+    }
+
+    // 環境に応じてメール送信先を解決
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.targetName}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.email, originalSubject);
+
+    if (!emailDestination.shouldSkip) {
+      const msg = {
+        to: emailDestination.to,
+        from: {
+          email: "fukui@gadandan.co.jp",
+          name: "Songift",
+        },
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+        attachments: [
+          {
+            content: mp4Base64,
+            filename: `birthday_song_${order.targetName}.mp4`,
+            type: "video/mp4",
+            disposition: "attachment",
+          },
+        ],
+      };
+
+      await sgMail.send(msg);
+      console.log(`[processPayment] MP4 delivery email sent to ${emailDestination.to}`);
+    }
+
+    // 5. Firestoreに送信ステータス記録
+    await orderRef.update({
+      deliveryStatus: "sent",
+      deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "支払い処理が完了し、MP4動画をメールでお送りしました",
+    });
+  } catch (error) {
+    console.error("[processPayment] Error:", error);
+
+    res.status(500).json({
+      error: "支払い処理に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * 返金処理（管理画面から呼び出される）
+ * - isPaidをfalseに戻す
+ * - 返金通知メールを送信
+ */
+exports.processRefund = onRequest({
+  cors: true,
+  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+}, async (req, res) => {
+  // CORSヘッダー設定
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {orderId, recipientEmail, recipientName} = req.body;
+
+    if (!orderId || !recipientEmail || !recipientName) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["orderId", "recipientEmail", "recipientName"],
+      });
+      return;
+    }
+
+    console.log(`[processRefund] Processing refund for order ${orderId}`);
+
+    // 1. Firestore更新: isPaid = false
+    const orderRef = admin.firestore().collection("orders").doc(orderId);
+    await orderRef.update({
+      isPaid: false,
+      refundedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[processRefund] Order ${orderId} marked as refunded`);
+
+    // 2. 返金通知メール送信
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    if (!sendgridApiKey) {
+      throw new Error("SENDGRID_API_KEY is not configured");
+    }
+
+    sgMail.setApiKey(sendgridApiKey.trim());
+
+    const emailBody = `
+${recipientName} 様
+
+Songiftをご利用いただきありがとうございました。
+
+ご注文いただいた内容について、返金処理を完了いたしました。
+ご不明な点がございましたら、お気軽にお問い合わせください。
+
+Songift運営チーム
+    `.trim();
+
+    // 環境に応じてメール送信先を解決
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const originalSubject = `【Songift】返金処理完了のお知らせ - ${recipientName}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
+
+    if (!emailDestination.shouldSkip) {
+      const msg = {
+        to: emailDestination.to,
+        from: {
+          email: "fukui@gadandan.co.jp",
+          name: "Songift",
+        },
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+      };
+
+      await sgMail.send(msg);
+      console.log(`[processRefund] Refund notification email sent to ${emailDestination.to}`);
+    }
+
+    // 3. Firestoreに送信ステータス記録
+    await orderRef.update({
+      refundEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "返金処理が完了し、通知メールを送信しました",
+    });
+  } catch (error) {
+    console.error("[processRefund] Error:", error);
+
+    // エラーログをFirestoreに保存
+    if (req.body.orderId) {
+      try {
+        await admin.firestore().collection("orders").doc(req.body.orderId).update({
+          refundEmailError: error.message,
+        });
+      } catch (updateError) {
+        console.error("[processRefund] Failed to update refund error:", updateError);
+      }
+    }
+
+    res.status(500).json({
+      error: "返金処理に失敗しました",
+      message: error.message,
+    });
   }
 });
 
