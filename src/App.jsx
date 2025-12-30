@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, useSearchParams, Navigate } from 'react-router-dom';
 // Firebase関連
 import { initializeApp } from "firebase/app";
@@ -492,6 +492,9 @@ const OrderConfirmPage = () => {
   const [fullVideoError, setFullVideoError] = useState(null);
   const [remainingDays, setRemainingDays] = useState(null);
 
+  // フル動画セクションへのref（view=fullパラメータでスクロール用）
+  const fullVideoSectionRef = useRef(null);
+
   useEffect(() => {
     const fetchOrder = async () => {
       if (!orderId || !token) {
@@ -565,6 +568,93 @@ const OrderConfirmPage = () => {
       fetchFullSignedUrl();
     }
   }, [order, orderId, token]);
+
+  // Phase1: view=fullパラメータでフル動画セクションへ自動スクロール
+  useEffect(() => {
+    const view = searchParams.get('view');
+    if (view === 'full' && fullSignedUrl && fullVideoSectionRef.current) {
+      // フル動画が読み込まれた後にスクロール
+      setTimeout(() => {
+        fullVideoSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    }
+  }, [searchParams, fullSignedUrl]);
+
+  // Phase1: フル動画共有ハンドラー
+  // ⚠️ 開発者向けメモ: 動画添付共有を安定させるには Storage bucket の CORS 設定が必要
+  // - gsutil cors set cors.json gs://birthday-song-app-stg.firebasestorage.app
+  // - gsutil cors set cors.json gs://birthday-song-app.firebasestorage.app
+  // CORS未設定の場合、fetch(signedUrl) が失敗し URL共有にフォールバックします
+  const handleShareFullVideo = async () => {
+    if (!fullSignedUrl) return;
+
+    const sharePageUrl = `${window.location.origin}/o/${orderId}?t=${encodeURIComponent(token || "")}&view=full`;
+    const title = 'バースデーソング動画';
+    const text = 'このリンクを開くとフル動画をすぐ再生できます（保存も可能）';
+
+    console.log('[share] start', {
+      orderId,
+      hasShare: !!navigator.share,
+      hasCanShare: !!navigator.canShare,
+    });
+
+    // 1) まずファイル共有（可能な端末では動画添付になる）
+    if (navigator.share) {
+      try {
+        console.log('[share] try file share: fetching blob...');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        const res = await fetch(fullSignedUrl, { signal: controller.signal, cache: 'no-store' });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+
+        const blob = await res.blob();
+        const filename = `birthday_song_full_${orderId}.mp4`;
+        const file = new File([blob], filename, { type: blob.type || 'video/mp4' });
+
+        const canShareFiles = !!navigator.canShare && navigator.canShare({ files: [file] });
+        console.log('[share] canShareFiles', canShareFiles, { type: file.type, size: file.size });
+
+        if (canShareFiles) {
+          await navigator.share({ files: [file], title, text });
+          console.log('[share] file share success');
+          return;
+        }
+
+        console.log('[share] file share not supported, fallback to url share');
+      } catch (err) {
+        // ユーザーキャンセルは無視
+        if (err?.name === 'AbortError') return;
+        console.log('[share] file share failed -> fallback to url share', err);
+      }
+    }
+
+    // 2) URL共有（署名URLではなく "注文ページURL" を共有）
+    if (navigator.share) {
+      try {
+        console.log('[share] try url share', sharePageUrl);
+        await navigator.share({ url: sharePageUrl, title, text });
+        console.log('[share] url share success');
+        return;
+      } catch (err) {
+        // ユーザーキャンセルは無視
+        if (err?.name === 'AbortError') return;
+        console.log('[share] url share failed -> fallback to clipboard', err);
+      }
+    }
+
+    // 3) クリップボードへ（注文ページURL）
+    try {
+      await navigator.clipboard.writeText(sharePageUrl);
+      alert('共有リンクをコピーしました。LINEなどで貼り付けて送れます。');
+      console.log('[share] clipboard success');
+    } catch (err) {
+      console.log('[share] clipboard failed', err);
+      alert(`共有リンクはこちらです:\n${sharePageUrl}`);
+    }
+  };
 
   // Phase1: 期限切れチェック（パターンA）
   const isPaid = order?.paymentStatus === 'paid';
@@ -727,7 +817,7 @@ const OrderConfirmPage = () => {
 
         {/* Phase1: フル動画セクション（課金後のみ） */}
         {order.paymentStatus === 'paid' && !isExpired && order.fullVideoPath && (
-          <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
+          <div ref={fullVideoSectionRef} className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
             <div className="flex justify-between items-center mb-4">
               <h3 className="font-bold text-purple-800 text-lg">🎬 フル動画（縦型1080x1920）</h3>
               {remainingDays !== null && (
@@ -738,13 +828,28 @@ const OrderConfirmPage = () => {
             {fullSignedUrl && (
               <>
                 <video controls src={fullSignedUrl} className="w-full mb-4 rounded" style={{ maxHeight: '600px' }} />
+
+                {/* 共有ボタン（メイン導線） */}
+                <button
+                  onClick={handleShareFullVideo}
+                  className="block w-full text-center bg-purple-600 text-white py-3 rounded-lg hover:bg-purple-700 font-bold mb-3"
+                >
+                  📤 共有
+                </button>
+
+                {/* ダウンロードボタン（サブ導線） */}
                 <a
                   href={fullSignedUrl}
-                  download="birthday_song.mp4"
-                  className="block w-full text-center bg-purple-600 text-white py-3 rounded-lg hover:bg-purple-700 font-bold"
+                  download={`birthday_song_full_${orderId}.mp4`}
+                  className="block w-full text-center bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600 font-bold mb-3"
                 >
-                  動画をダウンロード
+                  📥 ダウンロード（ファイルに保存）
                 </a>
+
+                {/* 注意書き */}
+                <p className="text-sm text-gray-600 text-center bg-blue-50 p-3 rounded-lg border border-blue-200">
+                  💡 写真に入れたい方は、再生画面の共有から"ビデオを保存"をご利用ください
+                </p>
               </>
             )}
 
