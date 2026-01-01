@@ -171,6 +171,7 @@ exports.createOrder = onRequest({
       ...formData,
       status: "waiting",
       tokenHash: tokenHash,
+      accessToken: token, // 生トークンも保存（プレビューメール等で使用）
       tokenCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
       tokenExpiresAt: tokenExpiresAt,
       tokenAccessCount: 0,
@@ -501,7 +502,8 @@ exports.sendBirthdaySongEmail = onRequest({
 });
 
 /**
- * プレビュー案内メール送信
+ * プレビュー案内メール送信（再送用）
+ * 固定テンプレートを使用、orderIdのみ必要
  */
 exports.sendPreviewEmail = onRequest({
   cors: true,
@@ -516,15 +518,23 @@ exports.sendPreviewEmail = onRequest({
   }
 
   try {
-    const {orderId, recipientEmail, recipientName, emailBody} = req.body;
+    const {orderId} = req.body;
 
-    if (!orderId || !recipientEmail || !recipientName || !emailBody) {
+    if (!orderId) {
       res.status(400).json({
         error: "必須パラメータが不足しています",
-        required: ["orderId", "recipientEmail", "recipientName", "emailBody"],
+        required: ["orderId"],
       });
       return;
     }
+
+    // 注文データ取得
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+    if (!orderDoc.exists) {
+      res.status(404).json({error: "注文が見つかりません"});
+      return;
+    }
+    const order = orderDoc.data();
 
     const sendgridApiKey = process.env.SENDGRID_API_KEY;
     if (!sendgridApiKey) throw new Error("SENDGRID_API_KEY is not configured");
@@ -532,8 +542,29 @@ exports.sendPreviewEmail = onRequest({
 
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-    const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${recipientName}様`;
-    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
+
+    // 固定テンプレートでメール本文生成
+    const planName = order.plan === "simple" ? "魔法診断" : "プロ";
+    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+    const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
+
+    const emailBody = `${order.userEmail} 様
+
+この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
+
+${order.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました。
+
+以下のURLからプレビューをご確認いただけます：
+${previewUrl}
+
+気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
+お支払い確認後、フル動画（MP4）をメールでお届けします。
+
+---
+Songift運営チーム`;
+
+    const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${order.userEmail}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
 
     if (!emailDestination.shouldSkip) {
       const msg = {
@@ -698,7 +729,7 @@ exports.getOrderByToken = onRequest({
 exports.generateVideoAssets = onCall({
   timeoutSeconds: 540, // 9分
   memory: "1GiB",
-  secrets: ["VIDEO_GENERATOR_URL"],
+  secrets: ["VIDEO_GENERATOR_URL", "SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (request) => {
   const {orderId} = request.data;
 
@@ -784,6 +815,59 @@ exports.generateVideoAssets = onCall({
     await orderDoc.ref.update({
       previewAudioPath: previewAudioPath,
     });
+
+    // 4.5. プレビュー案内メールを自動送信
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+
+    if (sendgridApiKey) {
+      sgMail.setApiKey(sendgridApiKey.trim());
+
+      // 最新のorderデータを再取得
+      const updatedOrder = (await orderDoc.ref.get()).data();
+      const planName = updatedOrder.plan === "simple" ? "魔法診断" : "プロ";
+      const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+      const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${updatedOrder.accessToken}`;
+
+      const previewEmailBody = `${updatedOrder.userEmail} 様
+
+この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
+
+${updatedOrder.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました。
+
+以下のURLからプレビューをご確認いただけます：
+${previewUrl}
+
+気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
+お支払い確認後、フル動画（MP4）をメールでお届けします。
+
+---
+Songift運営チーム`;
+
+      const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${updatedOrder.userEmail}様`;
+      const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, updatedOrder.userEmail, originalSubject);
+
+      if (!emailDestination.shouldSkip) {
+        const msg = {
+          to: emailDestination.to,
+          from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+          subject: emailDestination.subject,
+          text: previewEmailBody,
+          html: previewEmailBody.replace(/\n/g, "<br>"),
+        };
+        await sgMail.send(msg);
+        console.log(`[generateVideoAssets] Preview email sent to ${emailDestination.to}`);
+      }
+
+      // プレビューメール送信ステータス更新
+      await orderDoc.ref.update({
+        previewEmailStatus: "sent",
+        previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      console.warn("[generateVideoAssets] SENDGRID_API_KEY not configured, skipping preview email");
+    }
 
     // 5. Cloud Run /generate-full-video 呼び出し
     const fullVideoPath = `videos/${orderId}/full.mp4`;
