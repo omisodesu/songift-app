@@ -1196,87 +1196,9 @@ const AdminPage = ({ user }) => {
     });
   };
 
-  // プレビュー案内メール文面生成
-  const handleGeneratePreviewEmail = async (order) => {
-    if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
-    const prompt = `
-      以下の顧客への「バースデーソング15秒プレビュー案内メール」の文面を作成してください。
-
-      顧客情報:
-      - お名前: ${order.customerName || order.userEmail}
-      - 誕生日の方: ${order.targetName} 様
-      - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
-
-      メール要件:
-      - 件名は「【Songift】バースデーソングのプレビューが完成しました」
-      - 本文は期待感を高めるトーンで
-      - 「15秒のプレビューをこちらのページでご確認いただけます: ${window.location.origin}/o/${order.id}?t=${order.accessToken}」と案内
-      - 「気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください」と記載
-      - 「お支払い確認後、フル動画（MP4）をメールでお届けします」と記載
-      - 署名: Songift運営チーム
-    `;
-
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      await updateDoc(doc(db, "orders", order.id), {
-        previewEmailBody: text
-      });
-      alert("プレビューメール文面を生成しました");
-    } catch (e) {
-      console.error("Preview email generation error:", e);
-      alert("メール生成エラー");
-    }
-  };
-
-  // MP4納品メール文面生成
-  const handleGenerateDeliveryEmail = async (order) => {
-    if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
-    const prompt = `
-      以下の顧客への「バースデーソングMP4動画納品メール」の文面を作成してください。
-
-      顧客情報:
-      - お名前: ${order.customerName || order.userEmail}
-      - 誕生日の方: ${order.targetName} 様
-      - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
-
-      メール要件:
-      - 件名は「【Songift】世界に一つのバースデーソングをお届けします」
-      - お支払いいただきありがとうございますの感謝の言葉
-      - 添付のMP4ファイルをダウンロードしてご覧くださいと案内
-      - 縦型動画（1080x1920）なのでスマホでの再生に最適です
-      - 署名: Songift運営チーム
-    `;
-
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      await updateDoc(doc(db, "orders", order.id), {
-        deliveryEmailBody: text
-      });
-      alert("MP4納品メール文面を生成しました");
-    } catch (e) {
-      console.error("Delivery email generation error:", e);
-      alert("メール生成エラー");
-    }
-  };
-
-  // プレビュー案内メール送信
-  const handleSendPreviewEmail = async (order) => {
-    if (!order.previewEmailBody) return alert("プレビューメール文面が生成されていません");
-    if (!confirm("プレビュー案内メールを送信します。よろしいですか？")) return;
+  // プレビュー案内メール再送（固定テンプレート使用）
+  const handleResendPreviewEmail = async (order) => {
+    if (!confirm("プレビュー案内メールを再送します。よろしいですか？")) return;
 
     try {
       await updateDoc(doc(db, "orders", order.id), {previewEmailStatus: "sending"});
@@ -1287,15 +1209,12 @@ const AdminPage = ({ user }) => {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           orderId: order.id,
-          recipientEmail: order.userEmail,
-          recipientName: order.customerName || order.userEmail,
-          emailBody: order.previewEmailBody,
         }),
       });
 
       if (!response.ok) throw new Error('メール送信に失敗しました');
 
-      alert(`✅ プレビュー案内メールを送信しました！\n\n送信先: ${order.userEmail}`);
+      alert(`✅ プレビュー案内メールを再送しました！\n\n送信先: ${order.userEmail}`);
       window.location.reload();
     } catch (error) {
       console.error("Preview email send error:", error);
@@ -1335,7 +1254,7 @@ const AdminPage = ({ user }) => {
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
-          recipientName: order.targetName,
+          recipientName: order.userEmail,
           mp4Url: mp4Url,
           emailBody: order.deliveryEmailBody,
         }),
@@ -1428,7 +1347,7 @@ const AdminPage = ({ user }) => {
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
-          recipientName: order.targetName,
+          recipientName: order.userEmail,
         }),
       });
 
@@ -1734,61 +1653,50 @@ const AdminPage = ({ user }) => {
                   {/* プレビュー案内メール */}
                   <div className="mb-4 p-3 bg-blue-50 rounded">
                     <p className="font-medium mb-2 text-sm">📧 プレビュー案内メール</p>
-                    {!order.previewEmailBody ? (
-                      <button
-                        onClick={() => handleGeneratePreviewEmail(order)}
-                        disabled={!order.previewAudioPath}
-                        className="text-sm bg-blue-500 text-white px-3 py-2 rounded disabled:opacity-50 w-full"
-                      >
-                        文面生成 📝
-                      </button>
+                    {order.previewEmailStatus === 'sent' ? (
+                      <div>
+                        <p className="text-xs text-green-600 mb-2">
+                          ✅ 送信済み
+                          {order.previewEmailSentAt && (
+                            <span className="text-gray-500 ml-1">
+                              ({order.previewEmailSentAt.toDate ? order.previewEmailSentAt.toDate().toLocaleString('ja-JP') : new Date(order.previewEmailSentAt).toLocaleString('ja-JP')})
+                            </span>
+                          )}
+                        </p>
+                        <button
+                          onClick={() => handleResendPreviewEmail(order)}
+                          className="text-sm bg-blue-500 text-white px-3 py-2 rounded w-full"
+                        >
+                          再送する 📨
+                        </button>
+                      </div>
+                    ) : order.previewAudioPath ? (
+                      <p className="text-xs text-yellow-600">
+                        ⏳ 動画生成完了時に自動送信されます
+                      </p>
                     ) : (
-                      <>
-                        <textarea
-                          value={order.previewEmailBody}
-                          readOnly
-                          className="w-full h-32 text-xs p-2 border rounded mb-2 bg-white"
-                        />
-                        {order.previewEmailStatus !== 'sent' ? (
-                          <button
-                            onClick={() => handleSendPreviewEmail(order)}
-                            className="text-sm bg-blue-600 text-white px-3 py-2 rounded w-full"
-                          >
-                            プレビュー案内送信 📨
-                          </button>
-                        ) : (
-                          <p className="text-xs text-green-600">✅ 送信済み</p>
-                        )}
-                      </>
+                      <p className="text-xs text-gray-500">
+                        ※ 動画生成後に自動送信されます
+                      </p>
                     )}
                   </div>
 
                   {/* MP4納品メール */}
                   <div className="p-3 bg-green-50 rounded">
                     <p className="font-medium mb-2 text-sm">🎬 MP4納品メール</p>
-                    {!order.deliveryEmailBody ? (
-                      <button
-                        onClick={() => handleGenerateDeliveryEmail(order)}
-                        disabled={!order.fullVideoPath}
-                        className="text-sm bg-green-500 text-white px-3 py-2 rounded disabled:opacity-50 w-full"
-                      >
-                        文面生成 📝
-                      </button>
-                    ) : (
-                      <>
-                        <textarea
-                          value={order.deliveryEmailBody}
-                          readOnly
-                          className="w-full h-32 text-xs p-2 border rounded mb-2 bg-white"
-                        />
-                        {order.deliveryStatus === 'sent' ? (
-                          <p className="text-xs text-green-600">✅ 送信済み</p>
-                        ) : (
-                          <p className="text-xs text-gray-500">
-                            ※ 顧客ページの支払いボタン押下時に自動送信されます
-                          </p>
+                    {order.deliveryStatus === 'sent' ? (
+                      <p className="text-xs text-green-600">
+                        ✅ 送信済み
+                        {order.deliverySentAt && (
+                          <span className="text-gray-500 ml-1">
+                            ({order.deliverySentAt.toDate ? order.deliverySentAt.toDate().toLocaleString('ja-JP') : new Date(order.deliverySentAt).toLocaleString('ja-JP')})
+                          </span>
                         )}
-                      </>
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        ※ 顧客の支払い後に自動送信されます
+                      </p>
                     )}
                   </div>
                 </div>
