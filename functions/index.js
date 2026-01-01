@@ -694,6 +694,7 @@ exports.getOrderByToken = onRequest({
       previewAudioPath: order.previewAudioPath || null,
       fullVideoPath: order.fullVideoPath || null,
       // Phase1: Paywall関連フィールド
+      isPaid: order.isPaid || false,
       paymentStatus: order.paymentStatus || "unpaid",
       paidAt: order.paidAt || null,
       accessExpiresAt: order.accessExpiresAt || null,
