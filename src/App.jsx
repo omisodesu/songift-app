@@ -1200,15 +1200,15 @@ const AdminPage = ({ user }) => {
   const handleGeneratePreviewEmail = async (order) => {
     if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
     const prompt = `
-      以下の顧客への「バースデーソング15秒プレビュー案内メール」の文面を作成してください。
+      以下の顧客への「バースデーソング15秒プレビュー案内メール」の本文のみを作成してください。
+      ※件名は別途システムで設定されるため、本文には件名を含めないでください。
 
       顧客情報:
-      - お名前: ${order.customerName || order.userEmail}
+      - お名前: ${order.userEmail}
       - 誕生日の方: ${order.targetName} 様
       - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
 
-      メール要件:
-      - 件名は「【Songift】バースデーソングのプレビューが完成しました」
+      メール本文の要件:
       - 本文は期待感を高めるトーンで
       - 「15秒のプレビューをこちらのページでご確認いただけます: ${window.location.origin}/o/${order.id}?t=${order.accessToken}」と案内
       - 「気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください」と記載
@@ -1239,15 +1239,15 @@ const AdminPage = ({ user }) => {
   const handleGenerateDeliveryEmail = async (order) => {
     if (!GEMINI_API_KEY) return alert("Gemini APIキーが設定されていません");
     const prompt = `
-      以下の顧客への「バースデーソングMP4動画納品メール」の文面を作成してください。
+      以下の顧客への「バースデーソングMP4動画納品メール」の本文のみを作成してください。
+      ※件名は別途システムで設定されるため、本文には件名を含めないでください。
 
       顧客情報:
-      - お名前: ${order.customerName || order.userEmail}
+      - お名前: ${order.userEmail}
       - 誕生日の方: ${order.targetName} 様
       - プラン: ${order.plan === 'simple' ? '魔法診断' : 'プロ'}
 
-      メール要件:
-      - 件名は「【Songift】世界に一つのバースデーソングをお届けします」
+      メール本文の要件:
       - お支払いいただきありがとうございますの感謝の言葉
       - 添付のMP4ファイルをダウンロードしてご覧くださいと案内
       - 縦型動画（1080x1920）なのでスマホでの再生に最適です
@@ -1288,7 +1288,7 @@ const AdminPage = ({ user }) => {
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
-          recipientName: order.customerName || order.userEmail,
+          recipientName: order.userEmail,
           emailBody: order.previewEmailBody,
         }),
       });
@@ -1335,7 +1335,7 @@ const AdminPage = ({ user }) => {
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
-          recipientName: order.targetName,
+          recipientName: order.userEmail,
           mp4Url: mp4Url,
           emailBody: order.deliveryEmailBody,
         }),
@@ -1428,7 +1428,7 @@ const AdminPage = ({ user }) => {
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
-          recipientName: order.targetName,
+          recipientName: order.userEmail,
         }),
       });
 

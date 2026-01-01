@@ -190,7 +190,7 @@ exports.createOrder = onRequest({
     console.log(`Order URL generated: ${orderUrl} (env: ${appEnv})`);
 
     // メール本文作成
-    const emailBody = `${formData.targetName}様のバースデーソング作成を承りました。
+    const emailBody = `${email}様のバースデーソング作成を承りました。
 
 以下のURLから進捗状況を確認できます：
 ${orderUrl}
@@ -210,7 +210,7 @@ Songift - 世界に一つのバースデーソング`;
     sgMail.setApiKey(sendgridApiKey.trim());
 
     // 環境に応じてメール送信先を解決
-    const originalSubject = `【Songift】ご注文を受け付けました - ${formData.targetName}様`;
+    const originalSubject = `【Songift】ご注文を受け付けました - ${email}様`;
     const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, email, originalSubject);
 
     if (emailDestination.shouldSkip) {
@@ -1182,7 +1182,7 @@ exports.processPayment = onRequest({
     // 4. MP4納品メール送信
     // まずメール本文を取得（管理画面で事前生成されている想定）
     const emailBody = order.deliveryEmailBody || `
-${order.targetName} 様
+${order.userEmail} 様
 
 お支払いいただきありがとうございます。
 世界に一つのバースデーソングをお届けします。
@@ -1220,8 +1220,8 @@ Songift運営チーム
     // 環境に応じてメール送信先を解決
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-    const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.targetName}様`;
-    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.email, originalSubject);
+    const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.userEmail}様`;
+    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
 
     if (!emailDestination.shouldSkip) {
       const msg = {
