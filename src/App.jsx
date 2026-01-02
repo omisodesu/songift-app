@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AppRoutes from './routes/AppRoutes';
-import TopPage from './pages/TopPage';
-import OrderPage from './pages/OrderPage';
-import AdminLoginPage from './pages/admin/AdminLoginPage';
-import AdminPage from './pages/admin/AdminPage';
 // Firebase関連
 import { signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -269,8 +265,6 @@ const OrderConfirmPage = () => {
   );
 };
 
-// AdminPage and AdminLoginPage are now imported from ./pages/admin/
-
 // ---------------------------
 // メインアプリコンポーネント
 // ---------------------------
@@ -322,11 +316,7 @@ function App() {
       <AppRoutes
         user={user}
         isAdmin={isAdmin}
-        TopPage={TopPage}
-        OrderPage={OrderPage}
         OrderConfirmPage={OrderConfirmPage}
-        AdminLoginPage={AdminLoginPage}
-        AdminPage={AdminPage}
       />
     </BrowserRouter>
   );
