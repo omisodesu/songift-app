@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { track } from '../lib/analytics';
+import { getVariant } from '../lib/ab';
 import {
   COLORS,
   FEELINGS,
@@ -14,6 +16,15 @@ import {
 const OrderPage = ({ user = null }) => {
   const navigate = useNavigate();
   const [plan, setPlan] = useState('simple');
+  const trackedRef = useRef(false);
+
+  // ページ表示時にorder_startイベントを送信（1回のみ）
+  useEffect(() => {
+    if (!trackedRef.current) {
+      track('order_start', { variant: getVariant() });
+      trackedRef.current = true;
+    }
+  }, []);
   const [loading, setLoading] = useState(false);
   const [otherInstrument, setOtherInstrument] = useState('');
   const [nameError, setNameError] = useState('');
@@ -132,6 +143,12 @@ const OrderPage = ({ user = null }) => {
       if (!response.ok) {
         throw new Error(result.error || "注文に失敗しました");
       }
+
+      // 注文成功イベントを送信（orderIdのみ、PIIは送らない）
+      track('order_created', {
+        variant: getVariant(),
+        orderId: result.orderId || null,
+      });
 
       // 成功メッセージ
       alert(`注文を受け付けました！\n\n${email} 宛に確認メールを送信しました。\nメールに記載されたURLから進捗を確認できます。`);

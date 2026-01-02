@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import LandingA from './LandingA';
 import LandingB from './LandingB';
-
-const STORAGE_KEY = 'lp_variant';
+import { setVariant, getOrCreateVariant } from '../../lib/ab';
+import { track } from '../../lib/analytics';
 
 /**
  * A/Bテスト振り分けコンポーネント
@@ -13,28 +13,32 @@ const STORAGE_KEY = 'lp_variant';
  */
 const HomeAB = () => {
   const [searchParams] = useSearchParams();
-  const [variant, setVariant] = useState(null);
+  const [variant, setVariantState] = useState(null);
+  const trackedRef = useRef(false);
 
   useEffect(() => {
     const queryVariant = searchParams.get('v');
 
+    let finalVariant;
     if (queryVariant === 'A' || queryVariant === 'B') {
       // クエリパラメータがあれば優先し、localStorageに保存
-      localStorage.setItem(STORAGE_KEY, queryVariant);
       setVariant(queryVariant);
+      finalVariant = queryVariant;
     } else {
-      // localStorageを確認
-      const storedVariant = localStorage.getItem(STORAGE_KEY);
-      if (storedVariant === 'A' || storedVariant === 'B') {
-        setVariant(storedVariant);
-      } else {
-        // ランダム50/50で決定し保存
-        const randomVariant = Math.random() < 0.5 ? 'A' : 'B';
-        localStorage.setItem(STORAGE_KEY, randomVariant);
-        setVariant(randomVariant);
-      }
+      // localStorageを確認、なければランダム生成
+      finalVariant = getOrCreateVariant();
     }
+
+    setVariantState(finalVariant);
   }, [searchParams]);
+
+  // variant決定後にlp_viewイベントを送信（1回のみ）
+  useEffect(() => {
+    if (variant && !trackedRef.current) {
+      track('lp_view', { variant });
+      trackedRef.current = true;
+    }
+  }, [variant]);
 
   // variant決定前は何も表示しない（ちらつき防止）
   if (!variant) return null;

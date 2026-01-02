@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { httpsCallable } from "firebase/functions";
 import { functions } from '../lib/firebase';
+import { track } from '../lib/analytics';
 
 // 3. 注文確認ページ（トークン認証）
 const OrderConfirmPage = () => {
@@ -16,6 +17,54 @@ const OrderConfirmPage = () => {
   // Phase1: 署名URL管理
   const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
+
+  // プレビュー計測用ref（重複送信防止）
+  const previewAudioRef = useRef(null);
+  const previewPlayTracked = useRef(false);
+  const previewCompleteTracked = useRef(false);
+  const previewPauseTracked = useRef(false);
+  const lastTimeRef = useRef(0);
+
+  // プレビュー再生開始ハンドラ
+  const handlePreviewPlay = useCallback(() => {
+    if (!previewPlayTracked.current) {
+      track('preview_play', {
+        content_type: 'audio',
+        page: 'order_confirm',
+      });
+      previewPlayTracked.current = true;
+    }
+  }, []);
+
+  // プレビュー再生時間更新ハンドラ（15秒到達チェック）
+  const handlePreviewTimeUpdate = useCallback((e) => {
+    const currentTime = e.target.currentTime;
+    lastTimeRef.current = currentTime;
+
+    // 15秒以上に到達したら preview_complete を送信
+    if (currentTime >= 15 && !previewCompleteTracked.current) {
+      track('preview_complete', {
+        content_type: 'audio',
+        page: 'order_confirm',
+        listen_seconds: 15,
+      });
+      previewCompleteTracked.current = true;
+    }
+  }, []);
+
+  // プレビュー一時停止ハンドラ（15秒未満で停止した場合）
+  const handlePreviewPause = useCallback(() => {
+    const currentTime = lastTimeRef.current;
+    // 15秒未満で停止し、まだpauseイベントを送っていない場合
+    if (currentTime < 15 && !previewPauseTracked.current && previewPlayTracked.current) {
+      track('preview_pause', {
+        content_type: 'audio',
+        page: 'order_confirm',
+        listen_seconds: Math.floor(currentTime),
+      });
+      previewPauseTracked.current = true;
+    }
+  }, []);
 
   useEffect(() => {
     const fetchOrder = async () => {
@@ -216,7 +265,15 @@ const OrderConfirmPage = () => {
         {order.previewAudioPath && previewSignedUrl && (
           <div className="mb-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
             <h3 className="font-bold text-blue-800 mb-4 text-lg">🎵 15秒プレビュー（無料）</h3>
-            <audio controls src={previewSignedUrl} className="w-full" />
+            <audio
+              ref={previewAudioRef}
+              controls
+              src={previewSignedUrl}
+              className="w-full"
+              onPlay={handlePreviewPlay}
+              onTimeUpdate={handlePreviewTimeUpdate}
+              onPause={handlePreviewPause}
+            />
             <p className="text-xs text-gray-500 mt-2">※ 冒頭15秒のプレビューです</p>
           </div>
         )}
