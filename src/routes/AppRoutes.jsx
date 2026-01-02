@@ -4,6 +4,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 // 遅延読み込み
 const LandingPage = lazy(() => import('../pages/landing/LandingPage'));
 const OrderPage = lazy(() => import('../pages/OrderPage'));
+const OrderConfirmPage = lazy(() => import('../pages/OrderConfirmPage'));
 const AdminLoginPage = lazy(() => import('../pages/admin/AdminLoginPage'));
 const AdminPage = lazy(() => import('../pages/admin/AdminPage'));
 
@@ -21,7 +22,6 @@ const Loading = () => (
 const AppRoutes = ({
   user,
   isAdmin,
-  OrderConfirmPage, // OrderConfirmPageはApp.jsxに残る（functionsを使用するため）
 }) => {
   return (
     <Suspense fallback={<Loading />}>
