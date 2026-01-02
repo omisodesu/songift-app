@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 
-const TopPage = () => (
+const LandingPage = () => (
   <div className="min-h-screen flex flex-col items-center justify-center p-10 text-center bg-blue-50">
     <h1 className="text-4xl font-bold text-blue-600 mb-6">Songift</h1>
     <p className="mb-8 text-lg text-gray-600">
@@ -14,4 +14,4 @@ const TopPage = () => (
   </div>
 );
 
-export default TopPage;
+export default LandingPage;
