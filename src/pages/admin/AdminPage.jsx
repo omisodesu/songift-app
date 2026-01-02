@@ -1,25 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { initializeApp, getApps } from "firebase/app";
 import {
-  getFirestore, collection, query, orderBy, doc, updateDoc, onSnapshot, serverTimestamp
+  collection, query, orderBy, doc, updateDoc, onSnapshot, serverTimestamp
 } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
-
-// Firebase設定（App.jsxと同じ設定を使用）
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
-};
-
-// 既存のアプリがあれば使用、なければ初期化
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const db = getFirestore(app);
-const functions = getFunctions(app);
+import { httpsCallable } from "firebase/functions";
+import { db, functions } from '../../lib/firebase';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
