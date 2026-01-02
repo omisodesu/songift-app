@@ -1,6 +1,11 @@
-// TODO: A/Bテスト用ランディングページA
-// LandingPage.jsxをベースに作成予定
+import LandingPage from './LandingPage';
 
-export default function LandingA() {
-  return null;
-}
+/**
+ * A/Bテスト: バリアントA
+ * 現状は既存のLandingPageをそのまま表示
+ */
+const LandingA = () => {
+  return <LandingPage />;
+};
+
+export default LandingA;
