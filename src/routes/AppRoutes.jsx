@@ -2,7 +2,9 @@ import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 
 // 遅延読み込み
-const LandingPage = lazy(() => import('../pages/landing/LandingPage'));
+const HomeAB = lazy(() => import('../pages/landing/HomeAB'));
+const LandingA = lazy(() => import('../pages/landing/LandingA'));
+const LandingB = lazy(() => import('../pages/landing/LandingB'));
 const OrderPage = lazy(() => import('../pages/OrderPage'));
 const OrderConfirmPage = lazy(() => import('../pages/OrderConfirmPage'));
 const AdminLoginPage = lazy(() => import('../pages/admin/AdminLoginPage'));
@@ -27,7 +29,9 @@ const AppRoutes = ({
     <Suspense fallback={<Loading />}>
       <Routes>
         {/* 一般ユーザー向けルート */}
-        <Route path="/" element={<LandingPage />} />
+        <Route path="/" element={<HomeAB />} />
+        <Route path="/lp/a" element={<LandingA />} />
+        <Route path="/lp/b" element={<LandingB />} />
         <Route path="/order" element={<OrderPage />} />
         <Route path="/o/:orderId" element={<OrderConfirmPage />} />
 
