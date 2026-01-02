@@ -13,7 +13,15 @@ import LandingPage from './LandingPage';
  * ============================================
  */
 const LandingB = () => {
-  return <LandingPage />;
+  return (
+    <>
+      {/* 開発用：variant B の目印 */}
+      <div className="fixed top-2 right-2 bg-red-500 text-white px-2 py-1 text-xs rounded z-50">
+        B
+      </div>
+      <LandingPage />
+    </>
+  );
 };
 
 export default LandingB;
