@@ -5,6 +5,32 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>birthday-song-app</title>
+    <!-- Google Fonts for LandingB -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Righteous&display=swap" rel="stylesheet">
+    <!-- GA4 gtag.js - measurement IDは環境変数から注入 -->
+    <script>
+      // VITE_GA4_MEASUREMENT_ID が設定されている場合のみ gtag.js を読み込む
+      (function() {
+        var measurementId = '%VITE_GA4_MEASUREMENT_ID%';
+        // Viteのビルド時に置換されなかった場合（未設定）はスキップ
+        if (!measurementId || measurementId.indexOf('VITE_') === 0) {
+          window.gtag = function() {}; // ダミー関数
+          return;
+        }
+        // gtag.js を動的に読み込む
+        var script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://www.googletagmanager.com/gtag/js?id=' + measurementId;
+        document.head.appendChild(script);
+        // gtag 初期化
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function() { dataLayer.push(arguments); };
+        gtag('js', new Date());
+        gtag('config', measurementId);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
