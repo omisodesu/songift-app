@@ -1,9 +1,7 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from "firebase/auth";
-
-const auth = getAuth();
-const googleProvider = new GoogleAuthProvider();
+import { signInWithPopup, signOut } from "firebase/auth";
+import { auth, googleProvider } from '../../lib/firebase';
 
 // 5. 管理者ログインページ
 const AdminLoginPage = () => {
