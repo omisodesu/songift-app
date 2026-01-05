@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import LandingA from './LandingA';
 import LandingB from './LandingB';
@@ -13,23 +13,23 @@ import { track } from '../../lib/analytics';
  */
 const HomeAB = () => {
   const [searchParams] = useSearchParams();
-  const [variant, setVariantState] = useState(null);
   const trackedRef = useRef(false);
 
-  useEffect(() => {
-    const queryVariant = searchParams.get('v');
-
-    let finalVariant;
+  // variantを計算（useMemoで同期的に決定）
+  const variant = useMemo(() => {
+    const queryVariant = searchParams.get('v')?.toUpperCase();
     if (queryVariant === 'A' || queryVariant === 'B') {
-      // クエリパラメータがあれば優先し、localStorageに保存
-      setVariant(queryVariant);
-      finalVariant = queryVariant;
-    } else {
-      // localStorageを確認、なければランダム生成
-      finalVariant = getOrCreateVariant();
+      return queryVariant;
     }
+    return getOrCreateVariant();
+  }, [searchParams]);
 
-    setVariantState(finalVariant);
+  // localStorageへの保存（副作用）
+  useEffect(() => {
+    const queryVariant = searchParams.get('v')?.toUpperCase();
+    if (queryVariant === 'A' || queryVariant === 'B') {
+      setVariant(queryVariant);
+    }
   }, [searchParams]);
 
   // variant決定後にlp_viewイベントを送信（1回のみ）
@@ -39,9 +39,6 @@ const HomeAB = () => {
       trackedRef.current = true;
     }
   }, [variant]);
-
-  // variant決定前は何も表示しない（ちらつき防止）
-  if (!variant) return null;
 
   return variant === 'A' ? <LandingA /> : <LandingB />;
 };
