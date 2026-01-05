@@ -655,6 +655,11 @@ const AdminPage = ({ user }) => {
     }
   };
 
+  // ヘルパー関数: 注文IDから注文情報を取得
+  const getOrderByOrderId = (orderId) => {
+    return orders.find(order => order.id === orderId);
+  };
+
   // ヘルパー関数: ラベル取得
   const getChannelLabel = (channel) => {
     const channelLabels = {
@@ -902,6 +907,18 @@ const AdminPage = ({ user }) => {
                     </div>
                   </div>
 
+                  {/* 注文者名 */}
+                  {inq.orderId && getOrderByOrderId(inq.orderId) && (
+                    <div className="mb-3 pb-3 border-b border-gray-200">
+                      <p className="text-lg font-bold text-gray-800">
+                        {getOrderByOrderId(inq.orderId).targetName} 様
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        注文ID: {inq.orderId}
+                      </p>
+                    </div>
+                  )}
+
                   {/* コメント */}
                   {inq.comment && (
                     <div className={`p-4 rounded-lg mb-4 ${inq.refundRequested ? 'bg-white' : 'bg-gray-50'}`}>
@@ -913,12 +930,6 @@ const AdminPage = ({ user }) => {
 
                   {/* 詳細情報 */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                    {inq.orderId && (
-                      <div className="bg-blue-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">注文ID</p>
-                        <p className="font-medium text-blue-800 truncate">{inq.orderId}</p>
-                      </div>
-                    )}
                     {inq.dissatisfactionReason && (
                       <div className="bg-red-100 p-2 rounded">
                         <p className="text-xs text-gray-500">不満理由</p>
