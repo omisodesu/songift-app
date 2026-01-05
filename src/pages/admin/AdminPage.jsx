@@ -5,7 +5,7 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from '../../lib/firebase';
-import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS } from '../../lib/feedbackApi';
+import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS, CHANNEL_QUESTIONS } from '../../lib/feedbackApi';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
@@ -635,9 +635,15 @@ const AdminPage = ({ user }) => {
   };
 
 
+  // フィードバックとお問い合わせを分離
+  const regularFeedbacks = feedbacks.filter(fb => fb.channel !== FEEDBACK_CHANNELS.INQUIRY_FORM);
+  const inquiries = feedbacks.filter(fb => fb.channel === FEEDBACK_CHANNELS.INQUIRY_FORM);
+  const refundRequestCount = inquiries.filter(fb => fb.refundRequested).length;
+
   // ヘルパー関数: ラベル取得
   const getChannelLabel = (channel) => {
     const channelLabels = {
+      [FEEDBACK_CHANNELS.ORDER_RECEIVED]: '注文受付メール',
       [FEEDBACK_CHANNELS.ORDER_CONFIRM]: '注文確認画面',
       [FEEDBACK_CHANNELS.PREVIEW_EMAIL]: 'プレビューメール',
       [FEEDBACK_CHANNELS.DELIVERY_EMAIL]: '納品メール',
@@ -645,6 +651,14 @@ const AdminPage = ({ user }) => {
       [FEEDBACK_CHANNELS.INQUIRY_FORM]: 'お問い合わせ',
     };
     return channelLabels[channel] || channel;
+  };
+
+  // チャネル別追加質問のラベル取得
+  const getChannelQuestionLabel = (channel, fieldName, value) => {
+    const config = CHANNEL_QUESTIONS[channel];
+    if (!config || !config.options) return value;
+    const option = config.options.find(o => o.value === value);
+    return option?.label || value;
   };
 
   const getReorderIntentLabel = (value) => {
@@ -703,7 +717,22 @@ const AdminPage = ({ user }) => {
                 : 'bg-white text-gray-700 hover:bg-gray-100'
             }`}
           >
-            フィードバック ({feedbacks.length})
+            フィードバック ({regularFeedbacks.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('inquiries')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors relative ${
+              activeTab === 'inquiries'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            お問い合わせ ({inquiries.length})
+            {refundRequestCount > 0 && (
+              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                {refundRequestCount}
+              </span>
+            )}
           </button>
         </div>
 
@@ -712,12 +741,12 @@ const AdminPage = ({ user }) => {
           <div className="space-y-4">
             {feedbackLoading ? (
               <div className="text-center py-10">フィードバックを読み込んでいます...</div>
-            ) : feedbacks.length === 0 ? (
+            ) : regularFeedbacks.length === 0 ? (
               <div className="bg-white rounded-xl shadow p-8 text-center text-gray-500">
                 フィードバックはまだありません
               </div>
             ) : (
-              feedbacks.map((fb) => (
+              regularFeedbacks.map((fb) => (
                 <div key={fb.id} className="bg-white rounded-xl shadow p-6">
                   <div className="flex justify-between items-start mb-4">
                     <div className="flex items-center gap-3">
@@ -752,6 +781,25 @@ const AdminPage = ({ user }) => {
                         <p className="font-medium text-blue-800 truncate">{fb.orderId}</p>
                       </div>
                     )}
+                    {/* チャネル別質問の回答表示 */}
+                    {fb.orderingExperience && (
+                      <div className="bg-indigo-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">注文体験</p>
+                        <p className="font-medium text-indigo-800">{getChannelQuestionLabel('order_received', 'orderingExperience', fb.orderingExperience)}</p>
+                      </div>
+                    )}
+                    {fb.completionTimePerception && (
+                      <div className="bg-cyan-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">完成時間</p>
+                        <p className="font-medium text-cyan-800">{getChannelQuestionLabel('preview_email', 'completionTimePerception', fb.completionTimePerception)}</p>
+                      </div>
+                    )}
+                    {fb.recipientType && (
+                      <div className="bg-pink-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">贈り先</p>
+                        <p className="font-medium text-pink-800">{getChannelQuestionLabel('order_confirm', 'recipientType', fb.recipientType)}</p>
+                      </div>
+                    )}
                     {fb.reorderIntent && (
                       <div className="bg-green-50 p-2 rounded">
                         <p className="text-xs text-gray-500">再購入意向</p>
@@ -770,18 +818,6 @@ const AdminPage = ({ user }) => {
                         <p className="font-medium text-orange-800">{getBarrierLabel(fb.barrierReason)}</p>
                       </div>
                     )}
-                    {fb.dissatisfactionReason && (
-                      <div className="bg-red-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">不満理由</p>
-                        <p className="font-medium text-red-800">{getDissatisfactionLabel(fb.dissatisfactionReason)}</p>
-                      </div>
-                    )}
-                    {fb.refundRequested && (
-                      <div className="bg-red-100 p-2 rounded">
-                        <p className="text-xs text-gray-500">返金リクエスト</p>
-                        <p className="font-medium text-red-800">あり</p>
-                      </div>
-                    )}
                     {fb.variant && (
                       <div className="bg-purple-50 p-2 rounded">
                         <p className="text-xs text-gray-500">A/Bバリアント</p>
@@ -793,6 +829,89 @@ const AdminPage = ({ user }) => {
                   {/* visitorId (縮小表示) */}
                   <div className="mt-3 text-xs text-gray-400">
                     Visitor: {fb.visitorId?.slice(0, 8)}...
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* お問い合わせ一覧 */}
+        {activeTab === 'inquiries' && (
+          <div className="space-y-4">
+            {feedbackLoading ? (
+              <div className="text-center py-10">お問い合わせを読み込んでいます...</div>
+            ) : inquiries.length === 0 ? (
+              <div className="bg-white rounded-xl shadow p-8 text-center text-gray-500">
+                お問い合わせはまだありません
+              </div>
+            ) : (
+              inquiries.map((inq) => (
+                <div
+                  key={inq.id}
+                  className={`rounded-xl shadow p-6 ${
+                    inq.refundRequested
+                      ? 'bg-red-50 border-2 border-red-300'
+                      : 'bg-white'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-center gap-3">
+                      {inq.refundRequested ? (
+                        <span className="px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
+                          返金希望
+                        </span>
+                      ) : (
+                        <span className="px-3 py-1 bg-gray-200 text-gray-700 text-sm font-medium rounded">
+                          一般問い合わせ
+                        </span>
+                      )}
+                      {inq.rating && (
+                        <>
+                          <span className="text-2xl font-bold text-blue-600">{inq.rating}</span>
+                          {renderStars(inq.rating)}
+                        </>
+                      )}
+                    </div>
+                    <div className="text-right text-sm text-gray-500">
+                      <p className={inq.refundRequested ? 'text-red-600 font-bold' : ''}>{inq.createdAt}</p>
+                    </div>
+                  </div>
+
+                  {/* コメント */}
+                  {inq.comment && (
+                    <div className={`p-4 rounded-lg mb-4 ${inq.refundRequested ? 'bg-white' : 'bg-gray-50'}`}>
+                      <p className={`whitespace-pre-wrap ${inq.refundRequested ? 'text-red-800' : 'text-gray-800'}`}>
+                        {inq.comment}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* 詳細情報 */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    {inq.orderId && (
+                      <div className="bg-blue-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">注文ID</p>
+                        <p className="font-medium text-blue-800 truncate">{inq.orderId}</p>
+                      </div>
+                    )}
+                    {inq.dissatisfactionReason && (
+                      <div className="bg-red-100 p-2 rounded">
+                        <p className="text-xs text-gray-500">不満理由</p>
+                        <p className="font-medium text-red-800">{getDissatisfactionLabel(inq.dissatisfactionReason)}</p>
+                      </div>
+                    )}
+                    {inq.variant && (
+                      <div className="bg-purple-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">A/Bバリアント</p>
+                        <p className="font-medium text-purple-800">{inq.variant}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* visitorId (縮小表示) */}
+                  <div className="mt-3 text-xs text-gray-400">
+                    Visitor: {inq.visitorId?.slice(0, 8)}...
                   </div>
                 </div>
               ))

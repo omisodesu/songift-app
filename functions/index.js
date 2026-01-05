@@ -191,6 +191,9 @@ exports.createOrder = onRequest({
     const orderUrl = `${frontendBaseUrl}/o/${orderId}?t=${token}`;
     console.log(`Order URL generated: ${orderUrl} (env: ${appEnv})`);
 
+    // フィードバックURL生成（注文受付メール用）
+    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=order_received&oid=${orderId}`;
+
     // メール本文作成
     const emailBody = `${email}様のバースデーソング作成を承りました。
 
@@ -199,6 +202,11 @@ ${orderUrl}
 
 ※このURLは30日間有効です。
 ※完成次第、こちらのメールアドレスにお知らせします。
+
+---
+
+ご注文時の操作についてご意見をお聞かせください（30秒で完了）：
+${feedbackUrl}
 
 ---
 Songift - 世界に一つのバースデーソング`;
@@ -1540,31 +1548,44 @@ exports.submitFeedback = onRequest({
       dissatisfactionReason,
       isPublic,
       variant,
+      // 新規フィールド
+      inquiryType,
+      orderingExperience,
+      completionTimePerception,
+      recipientType,
     } = req.body;
 
-    // 必須パラメータ検証
-    if (!visitorId || !channel || !rating) {
+    // 必須パラメータ検証（一般問い合わせはratingなしでもOK）
+    if (!visitorId || !channel) {
       res.status(400).json({
         error: "必須パラメータが不足しています",
-        required: ["visitorId", "channel", "rating"],
+        required: ["visitorId", "channel"],
       });
       return;
     }
 
-    // rating範囲チェック
-    if (rating < 1 || rating > 5) {
+    // チャネル検証
+    const validChannels = ["order_received", "order_confirm", "preview_email", "delivery_email", "followup_email", "inquiry_form"];
+    if (!validChannels.includes(channel)) {
+      res.status(400).json({
+        error: "無効なチャネルです",
+        validChannels,
+      });
+      return;
+    }
+
+    // rating範囲チェック（ratingがある場合のみ）
+    if (rating !== null && rating !== undefined && (rating < 1 || rating > 5)) {
       res.status(400).json({
         error: "ratingは1-5の範囲で指定してください",
       });
       return;
     }
 
-    // チャネル検証
-    const validChannels = ["order_confirm", "preview_email", "delivery_email", "followup_email", "inquiry_form"];
-    if (!validChannels.includes(channel)) {
+    // 一般問い合わせ以外はratingが必須
+    if (channel !== "inquiry_form" && !rating) {
       res.status(400).json({
-        error: "無効なチャネルです",
-        validChannels,
+        error: "ratingは必須です",
       });
       return;
     }
@@ -1592,7 +1613,7 @@ exports.submitFeedback = onRequest({
       visitorId,
       orderId: orderId || null,
       channel,
-      rating,
+      rating: rating || null,
       comment: comment || null,
       reorderIntent: reorderIntent || null,
       pricePerception: pricePerception || null,
@@ -1601,6 +1622,11 @@ exports.submitFeedback = onRequest({
       dissatisfactionReason: dissatisfactionReason || null,
       isPublic: isPublic || false,
       variant: variant || null,
+      // 新規フィールド
+      inquiryType: inquiryType || null,
+      orderingExperience: orderingExperience || null,
+      completionTimePerception: completionTimePerception || null,
+      recipientType: recipientType || null,
       submissionDate: today,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };

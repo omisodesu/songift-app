@@ -47,6 +47,10 @@ const FeedbackPage = () => {
   // チャネル名の日本語表示
   const getChannelDisplayName = () => {
     switch (channel) {
+      case FEEDBACK_CHANNELS.ORDER_RECEIVED:
+        return '注文受付';
+      case FEEDBACK_CHANNELS.ORDER_CONFIRM:
+        return '注文確認';
       case FEEDBACK_CHANNELS.PREVIEW_EMAIL:
         return 'プレビューメール';
       case FEEDBACK_CHANNELS.DELIVERY_EMAIL:
