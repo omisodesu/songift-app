@@ -1,4 +1,5 @@
 const {onRequest, onCall} = require("firebase-functions/v2/https");
+const {onSchedule} = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
 const axios = require("axios");
@@ -548,6 +549,9 @@ exports.sendPreviewEmail = onRequest({
     const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
     const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
 
+    // フィードバックURL生成
+    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=preview_email&oid=${orderId}`;
+
     const emailBody = `${order.userEmail} 様
 
 この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
@@ -559,6 +563,11 @@ ${previewUrl}
 
 気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
 お支払い確認後、フル動画（MP4）をメールでお届けします。
+
+---
+
+ご感想をお聞かせください：
+${feedbackUrl}
 
 ---
 Songift運営チーム`;
@@ -831,6 +840,9 @@ exports.generateVideoAssets = onCall({
       const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
       const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${updatedOrder.accessToken}`;
 
+      // フィードバックURL生成
+      const feedbackUrl = `${frontendBaseUrl}/feedback?ch=preview_email&oid=${orderId}`;
+
       const previewEmailBody = `${updatedOrder.userEmail} 様
 
 この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
@@ -842,6 +854,11 @@ ${previewUrl}
 
 気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
 お支払い確認後、フル動画（MP4）をメールでお届けします。
+
+---
+
+ご感想をお聞かせください：
+${feedbackUrl}
 
 ---
 Songift運営チーム`;
@@ -1265,6 +1282,11 @@ exports.processPayment = onRequest({
     console.log(`[processPayment] Generated signed URL for full video`);
 
     // 4. MP4納品メール送信
+    // 環境変数からフロントエンドURLを取得
+    const appEnv = process.env.APP_ENV || "prod";
+    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=delivery_email&oid=${orderId}`;
+
     // まずメール本文を取得（管理画面で事前生成されている想定）
     const emailBody = order.deliveryEmailBody || `
 ${order.userEmail} 様
@@ -1275,6 +1297,12 @@ ${order.userEmail} 様
 添付のMP4ファイルをダウンロードしてご覧ください。
 縦型動画（1080x1920）なのでスマホでの再生に最適です。
 
+---
+
+ご感想をお聞かせください（1分で完了します）：
+${feedbackUrl}
+
+---
 Songift運営チーム
     `.trim();
 
@@ -1303,7 +1331,6 @@ Songift運営チーム
     }
 
     // 環境に応じてメール送信先を解決
-    const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
     const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.userEmail}様`;
     const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
@@ -1461,6 +1488,613 @@ Songift運営チーム
       error: "返金処理に失敗しました",
       message: error.message,
     });
+  }
+});
+
+// ============================================
+// Feedback System Functions
+// ============================================
+
+/**
+ * フィードバック送信
+ *
+ * リクエストボディ:
+ * {
+ *   visitorId: "UUID",
+ *   orderId: "注文ID" (オプション),
+ *   channel: "order_confirm" | "preview_email" | "delivery_email" | "followup_email" | "inquiry_form",
+ *   rating: 1-5,
+ *   comment: "コメント" (オプション),
+ *   reorderIntent: "yes" | "no" | "undecided" (オプション),
+ *   pricePerception: "cheap" | "fair" | "expensive" (オプション),
+ *   barrierReason: "price" | "wrong_use" | "unclear" | "competitor" | "not_now" | "other" (オプション),
+ *   refundRequested: boolean (オプション),
+ *   dissatisfactionReason: "price" | "delivery" | "quality" | "unclear" | "other" (オプション),
+ *   isPublic: boolean (オプション),
+ *   variant: "A" | "B" (オプション)
+ * }
+ */
+exports.submitFeedback = onRequest({
+  cors: true,
+}, async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {
+      visitorId,
+      orderId,
+      channel,
+      rating,
+      comment,
+      reorderIntent,
+      pricePerception,
+      barrierReason,
+      refundRequested,
+      dissatisfactionReason,
+      isPublic,
+      variant,
+    } = req.body;
+
+    // 必須パラメータ検証
+    if (!visitorId || !channel || !rating) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["visitorId", "channel", "rating"],
+      });
+      return;
+    }
+
+    // rating範囲チェック
+    if (rating < 1 || rating > 5) {
+      res.status(400).json({
+        error: "ratingは1-5の範囲で指定してください",
+      });
+      return;
+    }
+
+    // チャネル検証
+    const validChannels = ["order_confirm", "preview_email", "delivery_email", "followup_email", "inquiry_form"];
+    if (!validChannels.includes(channel)) {
+      res.status(400).json({
+        error: "無効なチャネルです",
+        validChannels,
+      });
+      return;
+    }
+
+    // 重複チェック（同一visitorId + channel + 日付）
+    const today = new Date().toISOString().split("T")[0];
+    const existingFeedback = await admin.firestore()
+        .collection("feedback")
+        .where("visitorId", "==", visitorId)
+        .where("channel", "==", channel)
+        .where("submissionDate", "==", today)
+        .limit(1)
+        .get();
+
+    if (!existingFeedback.empty) {
+      res.status(409).json({
+        error: "本日は既にこのチャネルでフィードバックを送信済みです",
+        feedbackId: existingFeedback.docs[0].id,
+      });
+      return;
+    }
+
+    // フィードバック保存
+    const feedbackData = {
+      visitorId,
+      orderId: orderId || null,
+      channel,
+      rating,
+      comment: comment || null,
+      reorderIntent: reorderIntent || null,
+      pricePerception: pricePerception || null,
+      barrierReason: barrierReason || null,
+      refundRequested: refundRequested || false,
+      dissatisfactionReason: dissatisfactionReason || null,
+      isPublic: isPublic || false,
+      variant: variant || null,
+      submissionDate: today,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const feedbackRef = await admin.firestore().collection("feedback").add(feedbackData);
+    const feedbackId = feedbackRef.id;
+
+    console.log(`[submitFeedback] Feedback created: ${feedbackId}, channel: ${channel}, rating: ${rating}`);
+
+    // visitors コレクション更新
+    const visitorRef = admin.firestore().collection("visitors").doc(visitorId);
+    const visitorDoc = await visitorRef.get();
+
+    const historyKey = `${channel}_${today}`;
+    const historyEntry = {
+      feedbackId,
+      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    if (visitorDoc.exists) {
+      await visitorRef.update({
+        [`feedbackHistory.${historyKey}`]: historyEntry,
+        lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      await visitorRef.set({
+        feedbackHistory: {
+          [historyKey]: historyEntry,
+        },
+        optedOutFollowup: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // orderId がある場合は orders コレクションも更新
+    if (orderId) {
+      const orderRef = admin.firestore().collection("orders").doc(orderId);
+      const orderDoc = await orderRef.get();
+
+      if (orderDoc.exists) {
+        await orderRef.update({
+          hasFeedback: true,
+          feedbackIds: admin.firestore.FieldValue.arrayUnion(feedbackId),
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      feedbackId,
+      message: "フィードバックを送信しました",
+    });
+  } catch (error) {
+    console.error("[submitFeedback] Error:", error);
+    res.status(500).json({
+      error: "フィードバックの送信に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * フィードバック送信済み状態をチェック
+ *
+ * リクエストボディ:
+ * {
+ *   visitorId: "UUID",
+ *   channel: "order_confirm" | "preview_email" | ...,
+ *   orderId: "注文ID" (オプション)
+ * }
+ */
+exports.checkFeedbackStatus = onRequest({
+  cors: true,
+}, async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {visitorId, channel, orderId} = req.body;
+
+    if (!visitorId || !channel) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["visitorId", "channel"],
+      });
+      return;
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+
+    // 今日の同一チャネルでのフィードバックをチェック
+    let query = admin.firestore()
+        .collection("feedback")
+        .where("visitorId", "==", visitorId)
+        .where("channel", "==", channel)
+        .where("submissionDate", "==", today);
+
+    // orderIdが指定されている場合は追加条件
+    if (orderId) {
+      query = query.where("orderId", "==", orderId);
+    }
+
+    const feedbackSnapshot = await query.limit(1).get();
+
+    if (!feedbackSnapshot.empty) {
+      const feedback = feedbackSnapshot.docs[0];
+      const data = feedback.data();
+
+      res.status(200).json({
+        hasSubmitted: true,
+        feedbackId: feedback.id,
+        submittedAt: data.createdAt?.toDate?.()?.toISOString() || null,
+        rating: data.rating,
+      });
+    } else {
+      res.status(200).json({
+        hasSubmitted: false,
+      });
+    }
+  } catch (error) {
+    console.error("[checkFeedbackStatus] Error:", error);
+    res.status(500).json({
+      error: "ステータス確認に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * フォローアップメールオプトアウト処理
+ *
+ * リクエストボディ:
+ * {
+ *   visitorId: "UUID"
+ * }
+ */
+exports.processFollowupOptOut = onRequest({
+  cors: true,
+}, async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {visitorId} = req.body;
+
+    if (!visitorId) {
+      res.status(400).json({
+        error: "visitorIdが必要です",
+      });
+      return;
+    }
+
+    // visitors コレクション更新
+    const visitorRef = admin.firestore().collection("visitors").doc(visitorId);
+    const visitorDoc = await visitorRef.get();
+
+    if (visitorDoc.exists) {
+      await visitorRef.update({
+        optedOutFollowup: true,
+        optedOutAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      await visitorRef.set({
+        feedbackHistory: {},
+        optedOutFollowup: true,
+        optedOutAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastSeenAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // followup_queue のpending状態をキャンセル
+    const queueSnapshot = await admin.firestore()
+        .collection("followup_queue")
+        .where("visitorId", "==", visitorId)
+        .where("status", "==", "pending")
+        .get();
+
+    const batch = admin.firestore().batch();
+    queueSnapshot.docs.forEach((doc) => {
+      batch.update(doc.ref, {
+        status: "opted_out",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+
+    if (!queueSnapshot.empty) {
+      await batch.commit();
+      console.log(`[processFollowupOptOut] Cancelled ${queueSnapshot.size} pending followups for visitor ${visitorId}`);
+    }
+
+    console.log(`[processFollowupOptOut] Visitor ${visitorId} opted out of followup emails`);
+
+    res.status(200).json({
+      success: true,
+      message: "フォローアップメールの配信を停止しました",
+    });
+  } catch (error) {
+    console.error("[processFollowupOptOut] Error:", error);
+    res.status(500).json({
+      error: "オプトアウト処理に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+// ============================================
+// Follow-up Email System Functions
+// ============================================
+
+/**
+ * フォローアップキューに追加
+ * プレビュー視聴完了時に呼び出し
+ *
+ * リクエストボディ:
+ * {
+ *   orderId: "注文ID",
+ *   visitorId: "訪問者ID" (オプション)
+ * }
+ */
+exports.scheduleFollowup = onRequest({
+  cors: true,
+}, async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+
+  if (req.method === "OPTIONS") {
+    res.set("Access-Control-Allow-Methods", "POST");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.status(204).send("");
+    return;
+  }
+
+  try {
+    const {orderId, visitorId} = req.body;
+
+    if (!orderId) {
+      res.status(400).json({error: "orderIdが必要です"});
+      return;
+    }
+
+    // 注文情報取得
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+    if (!orderDoc.exists) {
+      res.status(404).json({error: "注文が見つかりません"});
+      return;
+    }
+
+    const order = orderDoc.data();
+
+    // 既に支払い済みの場合はスキップ
+    if (order.isPaid) {
+      res.status(200).json({success: true, message: "既に支払い済みのためスキップしました"});
+      return;
+    }
+
+    // 既存のキューをチェック
+    const existingQueue = await admin.firestore()
+        .collection("followup_queue")
+        .where("orderId", "==", orderId)
+        .limit(1)
+        .get();
+
+    if (!existingQueue.empty) {
+      res.status(200).json({success: true, message: "既にキューに登録済みです"});
+      return;
+    }
+
+    // 12-24時間後のランダムな時刻を計算
+    const minHours = 12;
+    const maxHours = 24;
+    const randomHours = minHours + Math.random() * (maxHours - minHours);
+    const nextFollowupAt = new Date(Date.now() + randomHours * 60 * 60 * 1000);
+
+    // キューに追加
+    await admin.firestore().collection("followup_queue").add({
+      orderId,
+      userEmail: order.userEmail,
+      visitorId: visitorId || null,
+      targetName: order.targetName,
+      previewCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+      followupCount: 0,
+      nextFollowupAt: nextFollowupAt,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[scheduleFollowup] Added to queue: ${orderId}, next at: ${nextFollowupAt.toISOString()}`);
+
+    res.status(200).json({
+      success: true,
+      message: "フォローアップキューに追加しました",
+      nextFollowupAt: nextFollowupAt.toISOString(),
+    });
+  } catch (error) {
+    console.error("[scheduleFollowup] Error:", error);
+    res.status(500).json({
+      error: "キュー追加に失敗しました",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * フォローアップメール送信（定期実行）
+ * 1時間ごとに実行
+ */
+exports.sendFollowupEmails = onSchedule({
+  schedule: "every 1 hours",
+  timeZone: "Asia/Tokyo",
+  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+}, async (event) => {
+  console.log("[sendFollowupEmails] Starting scheduled job");
+
+  try {
+    const now = new Date();
+
+    // 送信対象のキューを取得
+    const pendingQueue = await admin.firestore()
+        .collection("followup_queue")
+        .where("status", "==", "pending")
+        .where("nextFollowupAt", "<=", now)
+        .get();
+
+    console.log(`[sendFollowupEmails] Found ${pendingQueue.size} pending items`);
+
+    const sendgridApiKey = process.env.SENDGRID_API_KEY;
+    if (!sendgridApiKey) {
+      console.error("[sendFollowupEmails] SENDGRID_API_KEY not configured");
+      return;
+    }
+    sgMail.setApiKey(sendgridApiKey.trim());
+
+    const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+
+    for (const doc of pendingQueue.docs) {
+      const queueItem = doc.data();
+      const {orderId, userEmail, targetName, followupCount, visitorId} = queueItem;
+
+      try {
+        // 最新の注文状態を確認
+        const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+        if (!orderDoc.exists) {
+          await doc.ref.update({status: "cancelled", updatedAt: admin.firestore.FieldValue.serverTimestamp()});
+          continue;
+        }
+
+        const order = orderDoc.data();
+
+        // 購入済みなら停止
+        if (order.isPaid) {
+          await doc.ref.update({status: "purchased", updatedAt: admin.firestore.FieldValue.serverTimestamp()});
+          console.log(`[sendFollowupEmails] Order ${orderId} already purchased, skipping`);
+          continue;
+        }
+
+        // オプトアウト確認
+        if (visitorId) {
+          const visitorDoc = await admin.firestore().collection("visitors").doc(visitorId).get();
+          if (visitorDoc.exists && visitorDoc.data().optedOutFollowup) {
+            await doc.ref.update({status: "opted_out", updatedAt: admin.firestore.FieldValue.serverTimestamp()});
+            console.log(`[sendFollowupEmails] Visitor ${visitorId} opted out, skipping`);
+            continue;
+          }
+        }
+
+        // メール本文生成
+        const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
+        const feedbackUrl = `${frontendBaseUrl}/feedback?ch=followup_email&oid=${orderId}&type=barrier`;
+        const optoutUrl = `${frontendBaseUrl}/feedback?optout=1&vid=${visitorId || ""}`;
+
+        let emailBody;
+        let subject;
+
+        if (followupCount === 0) {
+          // 1回目のフォローアップ
+          subject = `【Songift】${targetName}様へのバースデーソング、いかがでしたか？`;
+          emailBody = `${userEmail} 様
+
+先日は${targetName}様へのバースデーソングのプレビューをご視聴いただき、ありがとうございました。
+
+まだご購入手続きがお済みでない場合は、ぜひこの機会にご検討ください。
+
+▼ プレビューを再確認
+${previewUrl}
+
+世界に一つだけのバースデーソングで、大切な方に特別なサプライズをお届けしませんか？
+
+---
+
+ご購入をお見送りになった場合、差し支えなければ理由をお聞かせください：
+${feedbackUrl}
+
+---
+
+今後のメール配信を停止する場合：
+${optoutUrl}
+
+---
+Songift運営チーム`;
+        } else {
+          // 2回目のフォローアップ（最終案内）
+          subject = `【最終ご案内】${targetName}様へのバースデーソング`;
+          emailBody = `${userEmail} 様
+
+${targetName}様への世界に一つだけのバースデーソング、準備ができています。
+
+特別な日に、特別な歌を。ぜひこの機会にご検討ください。
+
+▼ プレビューを確認して購入
+${previewUrl}
+
+---
+
+ご意見・ご要望があればお聞かせください：
+${feedbackUrl}
+
+---
+
+今後のメール配信を停止する場合：
+${optoutUrl}
+
+---
+Songift運営チーム`;
+        }
+
+        // メール送信
+        const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, userEmail, subject);
+
+        if (!emailDestination.shouldSkip) {
+          const msg = {
+            to: emailDestination.to,
+            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+            subject: emailDestination.subject,
+            text: emailBody,
+            html: emailBody.replace(/\n/g, "<br>"),
+          };
+          await sgMail.send(msg);
+          console.log(`[sendFollowupEmails] Email sent to ${emailDestination.to} (followupCount: ${followupCount})`);
+        }
+
+        // キュー更新
+        const newFollowupCount = followupCount + 1;
+
+        if (newFollowupCount >= 2) {
+          // 2回送信済みで終了
+          await doc.ref.update({
+            followupCount: newFollowupCount,
+            status: "sent",
+            lastSentAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } else {
+          // 次回送信を48-72時間後に設定
+          const minHours = 48;
+          const maxHours = 72;
+          const randomHours = minHours + Math.random() * (maxHours - minHours);
+          const nextFollowupAt = new Date(Date.now() + randomHours * 60 * 60 * 1000);
+
+          await doc.ref.update({
+            followupCount: newFollowupCount,
+            nextFollowupAt: nextFollowupAt,
+            lastSentAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      } catch (itemError) {
+        console.error(`[sendFollowupEmails] Error processing queue item ${doc.id}:`, itemError);
+        // 個別エラーは記録して続行
+        await doc.ref.update({
+          lastError: itemError.message,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    console.log("[sendFollowupEmails] Completed scheduled job");
+  } catch (error) {
+    console.error("[sendFollowupEmails] Error:", error);
   }
 });
 

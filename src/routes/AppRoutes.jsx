@@ -9,6 +9,7 @@ const OrderPage = lazy(() => import('../pages/OrderPage'));
 const OrderConfirmPage = lazy(() => import('../pages/OrderConfirmPage'));
 const AdminLoginPage = lazy(() => import('../pages/admin/AdminLoginPage'));
 const AdminPage = lazy(() => import('../pages/admin/AdminPage'));
+const FeedbackPage = lazy(() => import('../pages/FeedbackPage'));
 
 // ローディング表示
 const Loading = () => (
@@ -34,6 +35,7 @@ const AppRoutes = ({
         <Route path="/lp/b" element={<LandingB />} />
         <Route path="/order" element={<OrderPage />} />
         <Route path="/o/:orderId" element={<OrderConfirmPage />} />
+        <Route path="/feedback" element={<FeedbackPage />} />
 
         {/* 管理者向けルート */}
         <Route path="/admin/login" element={<AdminLoginPage />} />

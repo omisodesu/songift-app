@@ -34,6 +34,30 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // feedback コレクション: フィードバック/レビュー
+    match /feedback/{feedbackId} {
+      // 読み取り: 管理者のみ
+      allow read: if isAdmin();
+      // 作成・更新・削除: Cloud Functions経由のみ
+      allow create, update, delete: if false;
+    }
+
+    // visitors コレクション: 訪問者情報（露出制御用）
+    match /visitors/{visitorId} {
+      // 読み取り: 管理者のみ
+      allow read: if isAdmin();
+      // 作成・更新・削除: Cloud Functions経由のみ
+      allow create, update, delete: if false;
+    }
+
+    // followup_queue コレクション: フォローアップメールキュー
+    match /followup_queue/{queueId} {
+      // 読み取り: 管理者のみ
+      allow read: if isAdmin();
+      // 作成・更新・削除: Cloud Functions経由のみ
+      allow create, update, delete: if false;
+    }
+
     // デフォルト: すべて拒否
     match /{document=**} {
       allow read, write: if false;
