@@ -3,6 +3,10 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { httpsCallable } from "firebase/functions";
 import { functions } from '../lib/firebase';
 import { track } from '../lib/analytics';
+import FeedbackForm from '../components/feedback/FeedbackForm';
+import InquiryModal from '../components/feedback/InquiryModal';
+import { useFeedbackExposure } from '../hooks/useFeedbackExposure';
+import { FEEDBACK_CHANNELS } from '../lib/feedbackApi';
 
 // 3. 注文確認ページ（トークン認証）
 const OrderConfirmPage = () => {
@@ -17,6 +21,9 @@ const OrderConfirmPage = () => {
   // Phase1: 署名URL管理
   const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
+
+  // 問い合わせモーダル
+  const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
 
   // プレビュー計測用ref（重複送信防止）
   const previewAudioRef = useRef(null);
@@ -143,6 +150,19 @@ const OrderConfirmPage = () => {
 
   // Phase1: 支払い状態チェック
   const isPaid = order?.isPaid || false;
+
+  // フィードバック表示制御
+  const { shouldShow: shouldShowFeedback, markShown: markFeedbackShown } = useFeedbackExposure(
+    FEEDBACK_CHANNELS.ORDER_CONFIRM,
+    orderId
+  );
+
+  // フィードバックプロンプト表示トラッキング
+  useEffect(() => {
+    if (isPaid && shouldShowFeedback) {
+      markFeedbackShown();
+    }
+  }, [isPaid, shouldShowFeedback, markFeedbackShown]);
 
   if (loading) {
     return (
@@ -306,10 +326,38 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
+        {/* フィードバックフォーム（支払い済みかつ未回答の場合） */}
+        {isPaid && shouldShowFeedback && (
+          <div className="mb-8">
+            <FeedbackForm
+              channel={FEEDBACK_CHANNELS.ORDER_CONFIRM}
+              orderId={orderId}
+              variant="full"
+            />
+          </div>
+        )}
+
+        {/* 問い合わせボタン */}
+        <div className="mb-8 text-center">
+          <button
+            onClick={() => setIsInquiryModalOpen(true)}
+            className="text-gray-500 hover:text-gray-700 text-sm underline"
+          >
+            お問い合わせ・ご相談
+          </button>
+        </div>
+
         <div className="text-center">
           <Link to="/" className="text-blue-500 underline">トップページへ戻る</Link>
         </div>
       </div>
+
+      {/* 問い合わせモーダル */}
+      <InquiryModal
+        orderId={orderId}
+        isOpen={isInquiryModalOpen}
+        onClose={() => setIsInquiryModalOpen(false)}
+      />
     </div>
   );
 };

@@ -5,12 +5,20 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from '../../lib/firebase';
+import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS } from '../../lib/feedbackApi';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // タブ管理
+  const [activeTab, setActiveTab] = useState('orders');
+
+  // フィードバック一覧
+  const [feedbacks, setFeedbacks] = useState([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
 
   // 編集機能用の状態管理
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -46,6 +54,21 @@ const AdminPage = ({ user }) => {
       }));
       setOrders(data);
       setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // フィードバック一覧の取得
+  useEffect(() => {
+    const q = query(collection(db, "feedback"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate().toLocaleString() || "日時不明"
+      }));
+      setFeedbacks(data);
+      setFeedbackLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -612,6 +635,47 @@ const AdminPage = ({ user }) => {
   };
 
 
+  // ヘルパー関数: ラベル取得
+  const getChannelLabel = (channel) => {
+    const channelLabels = {
+      [FEEDBACK_CHANNELS.ORDER_CONFIRM]: '注文確認画面',
+      [FEEDBACK_CHANNELS.PREVIEW_EMAIL]: 'プレビューメール',
+      [FEEDBACK_CHANNELS.DELIVERY_EMAIL]: '納品メール',
+      [FEEDBACK_CHANNELS.FOLLOWUP_EMAIL]: 'フォローアップ',
+      [FEEDBACK_CHANNELS.INQUIRY_FORM]: 'お問い合わせ',
+    };
+    return channelLabels[channel] || channel;
+  };
+
+  const getReorderIntentLabel = (value) => {
+    const item = REORDER_INTENTS.find(r => r.value === value);
+    return item?.label || value;
+  };
+
+  const getPricePerceptionLabel = (value) => {
+    const item = PRICE_PERCEPTIONS.find(p => p.value === value);
+    return item?.label || value;
+  };
+
+  const getDissatisfactionLabel = (value) => {
+    const item = DISSATISFACTION_REASONS.find(d => d.value === value);
+    return item?.label || value;
+  };
+
+  const getBarrierLabel = (value) => {
+    const item = BARRIER_REASONS.find(b => b.value === value);
+    return item?.label || value;
+  };
+
+  // 星評価表示
+  const renderStars = (rating) => {
+    return (
+      <span className="text-yellow-500">
+        {'★'.repeat(rating)}{'☆'.repeat(5 - rating)}
+      </span>
+    );
+  };
+
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
   return (
@@ -619,6 +683,125 @@ const AdminPage = ({ user }) => {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-3xl font-bold text-gray-800 mb-6">管理者ダッシュボード</h1>
 
+        {/* タブ切り替え */}
+        <div className="flex gap-2 mb-6">
+          <button
+            onClick={() => setActiveTab('orders')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              activeTab === 'orders'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            注文一覧 ({orders.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('feedback')}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              activeTab === 'feedback'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            フィードバック ({feedbacks.length})
+          </button>
+        </div>
+
+        {/* フィードバック一覧 */}
+        {activeTab === 'feedback' && (
+          <div className="space-y-4">
+            {feedbackLoading ? (
+              <div className="text-center py-10">フィードバックを読み込んでいます...</div>
+            ) : feedbacks.length === 0 ? (
+              <div className="bg-white rounded-xl shadow p-8 text-center text-gray-500">
+                フィードバックはまだありません
+              </div>
+            ) : (
+              feedbacks.map((fb) => (
+                <div key={fb.id} className="bg-white rounded-xl shadow p-6">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl font-bold text-blue-600">{fb.rating}</span>
+                      {renderStars(fb.rating)}
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        fb.rating >= 4 ? 'bg-green-100 text-green-800' :
+                        fb.rating >= 3 ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {fb.rating >= 4 ? '高評価' : fb.rating >= 3 ? '普通' : '低評価'}
+                      </span>
+                    </div>
+                    <div className="text-right text-sm text-gray-500">
+                      <p>{fb.createdAt}</p>
+                      <p className="text-xs">{getChannelLabel(fb.channel)}</p>
+                    </div>
+                  </div>
+
+                  {/* コメント */}
+                  {fb.comment && (
+                    <div className="bg-gray-50 p-4 rounded-lg mb-4">
+                      <p className="text-gray-800 whitespace-pre-wrap">{fb.comment}</p>
+                    </div>
+                  )}
+
+                  {/* 詳細情報 */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                    {fb.orderId && (
+                      <div className="bg-blue-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">注文ID</p>
+                        <p className="font-medium text-blue-800 truncate">{fb.orderId}</p>
+                      </div>
+                    )}
+                    {fb.reorderIntent && (
+                      <div className="bg-green-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">再購入意向</p>
+                        <p className="font-medium text-green-800">{getReorderIntentLabel(fb.reorderIntent)}</p>
+                      </div>
+                    )}
+                    {fb.pricePerception && (
+                      <div className="bg-yellow-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">価格感</p>
+                        <p className="font-medium text-yellow-800">{getPricePerceptionLabel(fb.pricePerception)}</p>
+                      </div>
+                    )}
+                    {fb.barrierReason && (
+                      <div className="bg-orange-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">購入障壁</p>
+                        <p className="font-medium text-orange-800">{getBarrierLabel(fb.barrierReason)}</p>
+                      </div>
+                    )}
+                    {fb.dissatisfactionReason && (
+                      <div className="bg-red-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">不満理由</p>
+                        <p className="font-medium text-red-800">{getDissatisfactionLabel(fb.dissatisfactionReason)}</p>
+                      </div>
+                    )}
+                    {fb.refundRequested && (
+                      <div className="bg-red-100 p-2 rounded">
+                        <p className="text-xs text-gray-500">返金リクエスト</p>
+                        <p className="font-medium text-red-800">あり</p>
+                      </div>
+                    )}
+                    {fb.variant && (
+                      <div className="bg-purple-50 p-2 rounded">
+                        <p className="text-xs text-gray-500">A/Bバリアント</p>
+                        <p className="font-medium text-purple-800">{fb.variant}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* visitorId (縮小表示) */}
+                  <div className="mt-3 text-xs text-gray-400">
+                    Visitor: {fb.visitorId?.slice(0, 8)}...
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* 注文一覧 */}
+        {activeTab === 'orders' && (
         <div className="space-y-6">
           {orders.map((order) => (
             <div key={order.id} className="bg-white rounded-xl shadow p-6">
@@ -971,6 +1154,7 @@ const AdminPage = ({ user }) => {
             </div>
           ))}
         </div>
+        )}
       </div>
     </div>
   );
