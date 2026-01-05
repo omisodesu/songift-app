@@ -638,7 +638,22 @@ const AdminPage = ({ user }) => {
   // フィードバックとお問い合わせを分離
   const regularFeedbacks = feedbacks.filter(fb => fb.channel !== FEEDBACK_CHANNELS.INQUIRY_FORM);
   const inquiries = feedbacks.filter(fb => fb.channel === FEEDBACK_CHANNELS.INQUIRY_FORM);
-  const refundRequestCount = inquiries.filter(fb => fb.refundRequested).length;
+  // 未対応の返金リクエストのみカウント
+  const unhandledRefundCount = inquiries.filter(fb => fb.refundRequested && !fb.handled).length;
+
+  // お問い合わせを対応済みにする
+  const handleMarkAsHandled = async (inquiryId) => {
+    try {
+      const feedbackRef = doc(db, 'feedback', inquiryId);
+      await updateDoc(feedbackRef, {
+        handled: true,
+        handledAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error('対応済みマーク失敗:', error);
+      alert('対応済みにできませんでした: ' + error.message);
+    }
+  };
 
   // ヘルパー関数: ラベル取得
   const getChannelLabel = (channel) => {
@@ -728,9 +743,9 @@ const AdminPage = ({ user }) => {
             }`}
           >
             お問い合わせ ({inquiries.length})
-            {refundRequestCount > 0 && (
+            {unhandledRefundCount > 0 && (
               <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                {refundRequestCount}
+                {unhandledRefundCount}
               </span>
             )}
           </button>
@@ -850,15 +865,24 @@ const AdminPage = ({ user }) => {
                 <div
                   key={inq.id}
                   className={`rounded-xl shadow p-6 ${
-                    inq.refundRequested
-                      ? 'bg-red-50 border-2 border-red-300'
-                      : 'bg-white'
+                    inq.handled
+                      ? 'bg-gray-100 border border-gray-300 opacity-70'
+                      : inq.refundRequested
+                        ? 'bg-red-50 border-2 border-red-300'
+                        : 'bg-white'
                   }`}
                 >
                   <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      {inq.handled && (
+                        <span className="px-3 py-1 bg-green-500 text-white text-sm font-bold rounded">
+                          対応済み
+                        </span>
+                      )}
                       {inq.refundRequested ? (
-                        <span className="px-3 py-1 bg-red-500 text-white text-sm font-bold rounded">
+                        <span className={`px-3 py-1 text-sm font-bold rounded ${
+                          inq.handled ? 'bg-red-300 text-red-800' : 'bg-red-500 text-white'
+                        }`}>
                           返金希望
                         </span>
                       ) : (
@@ -874,7 +898,7 @@ const AdminPage = ({ user }) => {
                       )}
                     </div>
                     <div className="text-right text-sm text-gray-500">
-                      <p className={inq.refundRequested ? 'text-red-600 font-bold' : ''}>{inq.createdAt}</p>
+                      <p className={inq.refundRequested && !inq.handled ? 'text-red-600 font-bold' : ''}>{inq.createdAt}</p>
                     </div>
                   </div>
 
@@ -910,8 +934,23 @@ const AdminPage = ({ user }) => {
                   </div>
 
                   {/* visitorId (縮小表示) */}
-                  <div className="mt-3 text-xs text-gray-400">
-                    Visitor: {inq.visitorId?.slice(0, 8)}...
+                  <div className="mt-3 flex justify-between items-center">
+                    <span className="text-xs text-gray-400">
+                      Visitor: {inq.visitorId?.slice(0, 8)}...
+                    </span>
+                    {!inq.handled && (
+                      <button
+                        onClick={() => handleMarkAsHandled(inq.id)}
+                        className="text-sm bg-green-500 text-white px-4 py-1.5 rounded hover:bg-green-600 transition-colors"
+                      >
+                        対応済みにする
+                      </button>
+                    )}
+                    {inq.handled && inq.handledAt && (
+                      <span className="text-xs text-gray-500">
+                        対応日時: {inq.handledAt.toDate ? inq.handledAt.toDate().toLocaleString('ja-JP') : new Date(inq.handledAt).toLocaleString('ja-JP')}
+                      </span>
+                    )}
                   </div>
                 </div>
               ))
