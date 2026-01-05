@@ -5,6 +5,7 @@ import {
   submitFeedback,
   FEEDBACK_CHANNELS,
   DISSATISFACTION_REASONS,
+  INQUIRY_TYPES,
 } from '../../lib/feedbackApi';
 import { markFeedbackSubmitted } from '../../lib/visitorStorage';
 import { track } from '../../lib/analytics';
@@ -22,10 +23,11 @@ import { getVariant } from '../../lib/ab';
  */
 const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
   const { visitorId } = useVisitorId();
-  const [step, setStep] = useState('initial'); // 'initial' | 'refund_form' | 'submitted'
+  const [step, setStep] = useState('initial'); // 'initial' | 'general_form' | 'refund_form' | 'submitted'
   const [rating, setRating] = useState(0);
   const [dissatisfactionReason, setDissatisfactionReason] = useState(null);
   const [comment, setComment] = useState('');
+  const [generalInquiry, setGeneralInquiry] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -52,6 +54,54 @@ const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
     track('inquiry_refund_start', { orderId });
   }, [orderId]);
 
+  const handleGeneralInquiryClick = useCallback(() => {
+    setStep('general_form');
+    track('inquiry_general_start', { orderId });
+  }, [orderId]);
+
+  const handleGeneralInquirySubmit = useCallback(async (e) => {
+    e.preventDefault();
+
+    if (!generalInquiry.trim()) {
+      setError('お問い合わせ内容を入力してください');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const feedbackData = {
+        visitorId,
+        orderId,
+        channel: FEEDBACK_CHANNELS.INQUIRY_FORM,
+        rating: null,
+        comment: generalInquiry.trim(),
+        refundRequested: false,
+        inquiryType: INQUIRY_TYPES.GENERAL,
+        variant: getVariant(),
+      };
+
+      await submitFeedback(feedbackData);
+
+      // ローカルストレージにも記録
+      markFeedbackSubmitted(FEEDBACK_CHANNELS.INQUIRY_FORM);
+
+      // 分析イベント
+      track('inquiry_submit', {
+        orderId,
+        type: 'general',
+      });
+
+      setStep('submitted');
+    } catch (err) {
+      console.error('General inquiry submission error:', err);
+      setError(err.message || '送信に失敗しました');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [visitorId, orderId, generalInquiry]);
+
   const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
 
@@ -76,6 +126,7 @@ const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
         rating,
         comment: comment.trim() || null,
         refundRequested: true,
+        inquiryType: INQUIRY_TYPES.REFUND,
         dissatisfactionReason,
         variant: getVariant(),
       };
@@ -103,11 +154,6 @@ const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
     }
   }, [visitorId, orderId, rating, dissatisfactionReason, comment, onRefundRequested]);
 
-  const handleGeneralInquiry = useCallback(() => {
-    // 一般問い合わせはメール起動
-    window.location.href = `mailto:support@songift.jp?subject=お問い合わせ（注文ID: ${orderId}）`;
-    onClose();
-  }, [orderId, onClose]);
 
   if (!isOpen) return null;
 
@@ -152,7 +198,7 @@ const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
               </p>
 
               <button
-                onClick={handleGeneralInquiry}
+                onClick={handleGeneralInquiryClick}
                 className="w-full p-4 border border-gray-200 rounded-lg text-left hover:bg-gray-50 transition-colors"
               >
                 <div className="font-medium text-gray-800">一般的なお問い合わせ</div>
@@ -171,6 +217,58 @@ const InquiryModal = ({ orderId, isOpen, onClose, onRefundRequested }) => {
                 </div>
               </button>
             </div>
+          )}
+
+          {step === 'general_form' && (
+            <form onSubmit={handleGeneralInquirySubmit} className="space-y-5">
+              <p className="text-gray-600 text-sm">
+                お問い合わせ内容をご入力ください。担当者より改めてご連絡いたします。
+              </p>
+
+              {/* お問い合わせ内容（必須） */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  お問い合わせ内容 <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={generalInquiry}
+                  onChange={(e) => setGeneralInquiry(e.target.value)}
+                  placeholder="ご質問やご要望をお聞かせください"
+                  rows={5}
+                  maxLength={1000}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
+                />
+                <p className="text-xs text-gray-500 mt-1 text-right">
+                  {generalInquiry.length}/1000
+                </p>
+              </div>
+
+              {/* エラーメッセージ */}
+              {error && (
+                <p className="text-red-600 text-sm text-center">{error}</p>
+              )}
+
+              {/* 送信ボタン */}
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep('initial');
+                    setError(null);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  戻る
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !generalInquiry.trim()}
+                  className="flex-1 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isSubmitting ? '送信中...' : '送信する'}
+                </button>
+              </div>
+            </form>
           )}
 
           {step === 'refund_form' && (

@@ -74,11 +74,73 @@ export const optOutFollowup = async (visitorId) => {
  * フィードバックチャネル定数
  */
 export const FEEDBACK_CHANNELS = {
+  ORDER_RECEIVED: 'order_received',
   ORDER_CONFIRM: 'order_confirm',
   PREVIEW_EMAIL: 'preview_email',
   DELIVERY_EMAIL: 'delivery_email',
   FOLLOWUP_EMAIL: 'followup_email',
   INQUIRY_FORM: 'inquiry_form',
+};
+
+/**
+ * 問い合わせ種別定数
+ */
+export const INQUIRY_TYPES = {
+  GENERAL: 'general',
+  REFUND: 'refund',
+};
+
+/**
+ * チャネル別質問設定
+ */
+export const CHANNEL_QUESTIONS = {
+  order_received: {
+    question: '注文の操作はいかがでしたか？',
+    options: [
+      { value: 'fun', label: '楽しかった' },
+      { value: 'easy', label: '簡単だった' },
+      { value: 'normal', label: '普通' },
+      { value: 'difficult', label: '難しかった' },
+    ],
+    fieldName: 'orderingExperience',
+    showReorderIntent: false,
+    showPricePerception: false,
+  },
+  preview_email: {
+    question: '完成までの時間はいかがでしたか？',
+    options: [
+      { value: 'fast', label: '早かった' },
+      { value: 'appropriate', label: 'ちょうど良い' },
+      { value: 'slow', label: '遅かった' },
+    ],
+    fieldName: 'completionTimePerception',
+    showReorderIntent: false,
+    showPricePerception: false,
+  },
+  order_confirm: {
+    question: 'この曲は誰に贈りますか？',
+    options: [
+      { value: 'family', label: '家族' },
+      { value: 'friend', label: '友人' },
+      { value: 'partner', label: 'パートナー' },
+      { value: 'colleague', label: '同僚・知人' },
+      { value: 'self', label: '自分用' },
+      { value: 'other', label: 'その他' },
+    ],
+    fieldName: 'recipientType',
+    showReorderIntent: false,
+    showPricePerception: false,
+  },
+  delivery_email: {
+    question: null,
+    showReorderIntent: true,
+    showPricePerception: true,
+  },
+  followup_email: {
+    question: null,
+    showReorderIntent: true,
+    showPricePerception: true,
+  },
 };
 
 /**

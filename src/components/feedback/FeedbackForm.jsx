@@ -6,6 +6,7 @@ import {
   FEEDBACK_CHANNELS,
   REORDER_INTENTS,
   PRICE_PERCEPTIONS,
+  CHANNEL_QUESTIONS,
 } from '../../lib/feedbackApi';
 import { markFeedbackSubmitted } from '../../lib/visitorStorage';
 import { track } from '../../lib/analytics';
@@ -32,10 +33,14 @@ const FeedbackForm = ({
   const [comment, setComment] = useState('');
   const [reorderIntent, setReorderIntent] = useState(null);
   const [pricePerception, setPricePerception] = useState(null);
+  const [channelAnswer, setChannelAnswer] = useState(null);
   const [isExpanded, setIsExpanded] = useState(initiallyExpanded);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [error, setError] = useState(null);
+
+  // チャネル別質問設定を取得
+  const channelConfig = CHANNEL_QUESTIONS[channel] || {};
 
   const handleRatingChange = useCallback((newRating) => {
     setRating(newRating);
@@ -63,10 +68,15 @@ const FeedbackForm = ({
         channel,
         rating,
         comment: comment.trim() || null,
-        reorderIntent,
-        pricePerception,
+        reorderIntent: channelConfig.showReorderIntent ? reorderIntent : null,
+        pricePerception: channelConfig.showPricePerception ? pricePerception : null,
         variant: getVariant(),
       };
+
+      // チャネル別質問の回答を追加
+      if (channelConfig.fieldName && channelAnswer) {
+        feedbackData[channelConfig.fieldName] = channelAnswer;
+      }
 
       await submitFeedback(feedbackData);
 
@@ -79,8 +89,9 @@ const FeedbackForm = ({
         orderId,
         rating,
         hasComment: !!comment.trim(),
-        reorderIntent,
-        pricePerception,
+        reorderIntent: channelConfig.showReorderIntent ? reorderIntent : null,
+        pricePerception: channelConfig.showPricePerception ? pricePerception : null,
+        channelAnswer,
       });
 
       setIsSubmitted(true);
@@ -91,7 +102,7 @@ const FeedbackForm = ({
     } finally {
       setIsSubmitting(false);
     }
-  }, [visitorId, orderId, channel, rating, comment, reorderIntent, pricePerception, onSubmitSuccess]);
+  }, [visitorId, orderId, channel, rating, comment, reorderIntent, pricePerception, channelAnswer, channelConfig, onSubmitSuccess]);
 
   // 送信済み表示
   if (isSubmitted) {
@@ -133,51 +144,80 @@ const FeedbackForm = ({
         {/* 展開部分 */}
         {isExpanded && variant === 'full' && (
           <div className="space-y-4 mt-4">
-            {/* 再購入意向 */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                また利用したいですか？
-              </label>
-              <div className="flex gap-2 flex-wrap">
-                {REORDER_INTENTS.map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setReorderIntent(value)}
-                    className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-                      reorderIntent === value
-                        ? 'bg-blue-500 text-white border-blue-500'
-                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-300'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+            {/* チャネル別質問 */}
+            {channelConfig.question && channelConfig.options && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {channelConfig.question}
+                </label>
+                <div className="flex gap-2 flex-wrap">
+                  {channelConfig.options.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setChannelAnswer(value)}
+                      className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                        channelAnswer === value
+                          ? 'bg-blue-500 text-white border-blue-500'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-blue-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* 価格認知 */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                価格についてどう思いましたか？
-              </label>
-              <div className="flex gap-2 flex-wrap">
-                {PRICE_PERCEPTIONS.map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setPricePerception(value)}
-                    className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
-                      pricePerception === value
-                        ? 'bg-blue-500 text-white border-blue-500'
-                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-300'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+            {/* 再購入意向（delivery_email, followup_emailのみ） */}
+            {channelConfig.showReorderIntent && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  また利用したいですか？
+                </label>
+                <div className="flex gap-2 flex-wrap">
+                  {REORDER_INTENTS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setReorderIntent(value)}
+                      className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                        reorderIntent === value
+                          ? 'bg-blue-500 text-white border-blue-500'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-blue-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* 価格認知（delivery_email, followup_emailのみ） */}
+            {channelConfig.showPricePerception && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  価格についてどう思いましたか？
+                </label>
+                <div className="flex gap-2 flex-wrap">
+                  {PRICE_PERCEPTIONS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setPricePerception(value)}
+                      className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                        pricePerception === value
+                          ? 'bg-blue-500 text-white border-blue-500'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-blue-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* コメント */}
             <div>
