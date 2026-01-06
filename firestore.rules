@@ -38,8 +38,10 @@ service cloud.firestore {
     match /feedback/{feedbackId} {
       // 読み取り: 管理者のみ
       allow read: if isAdmin();
-      // 作成・更新・削除: Cloud Functions経由のみ
-      allow create, update, delete: if false;
+      // 更新: 管理者のみ（対応済みマーク用）
+      allow update: if isAdmin();
+      // 作成・削除: Cloud Functions経由のみ
+      allow create, delete: if false;
     }
 
     // visitors コレクション: 訪問者情報（露出制御用）
