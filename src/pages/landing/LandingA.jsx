@@ -204,8 +204,8 @@ const LandingA = () => {
     },
     {
       icon: HeartIcon,
-      title: '完全無料',
-      description: '大切な人への想いを、今すぐ形に。費用は一切かかりません。',
+      title: 'ワンコイン500円',
+      description: '大切な人への想いを、手軽な価格で形に。特別な贈り物をお届けします。',
     },
   ];
 
@@ -250,12 +250,12 @@ const LandingA = () => {
 
   const faqs = [
     {
-      question: '本当に無料で使えますか？',
-      answer: 'はい、完全無料でご利用いただけます。曲の生成からダウンロードまで、一切費用はかかりません。大切な人への想いを、気軽に形にしてください。',
+      question: '料金はいくらですか？',
+      answer: '1曲500円でご利用いただけます。ワンコイン価格で、世界に一つだけのオリジナルバースデーソングをお届けします。',
     },
     {
-      question: 'どのくらいで曲が完成しますか？',
-      answer: '通常、数分〜数十分程度で完成します。完成次第、登録いただいたメールアドレスにお知らせが届きます。',
+      question: 'どのくらいで曲が届きますか？',
+      answer: 'ご注文から3日以内に、登録いただいたメールアドレスに完成した曲をお届けします。',
     },
     {
       question: '作った曲はSNSでシェアできますか？',
@@ -358,8 +358,8 @@ const LandingA = () => {
 
             {/* CTA */}
             <div className="animate-fade-in-up opacity-0" style={{ animationDelay: '0.3s', animationFillMode: 'forwards' }}>
-              <CTAButton onClick={() => handleCtaClick('無料で作ってみる - Hero')}>
-                無料で作ってみる
+              <CTAButton onClick={() => handleCtaClick('作ってみる - Hero')}>
+                作ってみる
               </CTAButton>
             </div>
 
@@ -367,7 +367,7 @@ const LandingA = () => {
             <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-sm text-slate-500 animate-fade-in-up opacity-0" style={{ animationDelay: '0.4s', animationFillMode: 'forwards' }}>
               <span className="flex items-center gap-2">
                 <CheckCircleIcon className="w-5 h-5 text-green-500" />
-                完全無料
+                ワンコイン500円
               </span>
               <span className="flex items-center gap-2">
                 <CheckCircleIcon className="w-5 h-5 text-green-500" />
@@ -375,7 +375,7 @@ const LandingA = () => {
               </span>
               <span className="flex items-center gap-2">
                 <CheckCircleIcon className="w-5 h-5 text-green-500" />
-                すぐに完成
+                3日以内にお届け
               </span>
             </div>
           </div>
@@ -534,7 +534,7 @@ const LandingA = () => {
             <p className="text-white/90 text-lg mb-10 max-w-2xl mx-auto">
               あなたの想いをAIが特別な歌に変えます。
               <br />
-              今すぐ無料で作成してみませんか？
+              ワンコイン500円で作成してみませんか？
             </p>
             <CTAButton
               onClick={() => handleCtaClick('今すぐ作成する - FinalCTA')}
