@@ -11,6 +11,7 @@ import {
   PRO_INSTRUMENTS,
   PRO_GENDERS,
 } from '../lib/constants';
+import { BACKGROUND_TEMPLATES } from '../lib/backgroundTemplates';
 
 // 2. 注文フォームページ
 const OrderPage = ({ user = null }) => {
@@ -49,6 +50,8 @@ const OrderPage = ({ user = null }) => {
     mood: '明るい',
     episode: '',
     genre: '',
+    // 背景テンプレート
+    backgroundTemplateId: 't1',
   });
 
   const validateName = (name) => {
@@ -336,6 +339,45 @@ const OrderPage = ({ user = null }) => {
               </div>
             </>
           )}
+
+          {/* 背景テンプレート選択（両モード共通） */}
+          <div className="bg-gray-50 p-5 rounded-lg border border-gray-200">
+            <label className="block font-bold text-gray-800 mb-2">
+              🎬 動画の背景スタイル <span className="text-red-500">*</span>
+            </label>
+            <p className="text-sm text-gray-500 mb-3">
+              完成動画に使用する背景を選んでください
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              {BACKGROUND_TEMPLATES.map((template) => (
+                <label
+                  key={template.id}
+                  className={`relative flex flex-col items-center p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                    formData.backgroundTemplateId === template.id
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="backgroundTemplateId"
+                    value={template.id}
+                    checked={formData.backgroundTemplateId === template.id}
+                    onChange={handleChange}
+                    className="sr-only"
+                  />
+                  <div
+                    className={`w-16 h-24 rounded-md mb-2 ${template.previewClass}`}
+                  ></div>
+                  <span className="text-sm font-medium text-gray-800">{template.name}</span>
+                  <span className="text-xs text-gray-500">{template.desc}</span>
+                  {formData.backgroundTemplateId === template.id && (
+                    <span className="absolute top-1 right-1 text-blue-500 text-lg">✓</span>
+                  )}
+                </label>
+              ))}
+            </div>
+          </div>
 
           <button type="submit" disabled={loading} className={`w-full py-4 rounded-lg font-bold text-white text-xl shadow hover:opacity-90 transition ${plan === 'simple' ? 'bg-pink-500' : 'bg-indigo-600'}`}>
             {loading ? '送信中...' : 'この内容で申し込む'}
