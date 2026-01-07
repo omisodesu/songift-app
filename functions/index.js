@@ -1226,6 +1226,8 @@ exports.getAdminFullSignedUrl = onCall({
  */
 exports.processPayment = onRequest({
   cors: true,
+  memory: "1GiB",
+  timeoutSeconds: 120,
   secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
@@ -1375,18 +1377,31 @@ Songift運営チーム
 
       await sgMail.send(msg);
       console.log(`[processPayment] MP4 delivery email sent to ${emailDestination.to}`);
+
+      // 5. Firestoreに送信ステータス記録（メール送信成功時のみ）
+      await orderRef.update({
+        deliveryStatus: "sent",
+        deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "支払い処理が完了し、MP4動画をメールでお送りしました",
+      });
+    } else {
+      // STG環境でメール送信がスキップされた場合
+      console.log(`[processPayment] Email skipped (STG environment without override address)`);
+
+      await orderRef.update({
+        deliveryStatus: "skipped",
+        deliverySkippedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "支払い処理が完了しました（STG環境: メール送信はスキップされました）",
+      });
     }
-
-    // 5. Firestoreに送信ステータス記録
-    await orderRef.update({
-      deliveryStatus: "sent",
-      deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "支払い処理が完了し、MP4動画をメールでお送りしました",
-    });
   } catch (error) {
     console.error("[processPayment] Error:", error);
 
