@@ -422,6 +422,157 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
   }
+
+  // ===========================================
+  // V2: 音楽同期字幕生成（lineEvents ベース）
+  // ===========================================
+
+  /**
+   * V2: lineEvents から ASS ファイルを生成
+   * 音楽のタイムスタンプに合わせた字幕タイミング
+   *
+   * @param {Array<{start: number, end: number, text: string}>} lineEvents - 行イベント配列
+   * @param {number} audioDurationSeconds - 音声の長さ（秒）
+   * @param {string} assPath - 出力ASSファイルパス
+   * @returns {Promise<void>}
+   */
+  async generateAssFileV2(lineEvents, audioDurationSeconds, assPath) {
+    if (!lineEvents || lineEvents.length === 0) {
+      console.log('[V2 ASS] lineEvents is empty, skipping ASS generation');
+      return;
+    }
+
+    console.log(`[V2 ASS] Generating ASS with ${lineEvents.length} line events`);
+
+    // ASSファイル生成
+    const assContent = this._buildAssContentV2(lineEvents, audioDurationSeconds);
+
+    // ファイル書き出し
+    await fs.writeFile(assPath, assContent, 'utf8');
+    console.log(`[V2 ASS] ASS file generated: ${assPath}`);
+  }
+
+  /**
+   * V2: ASSファイルの内容を構築（lineEventsベース）
+   * @private
+   */
+  _buildAssContentV2(lineEvents, audioDuration) {
+    // ASSヘッダー（V1と同じ見た目を維持）
+    const header = `[Script Info]
+Title: Birthday Song Lyrics V2
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans CJK JP,60,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,3,2,2,40,40,100,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+    // ダイアログ行を生成
+    const dialogLines = [];
+
+    for (let i = 0; i < lineEvents.length; i++) {
+      const event = lineEvents[i];
+      let { start, end, text } = event;
+
+      // audioDurationを超えないようにclamp
+      if (end > audioDuration) {
+        end = audioDuration;
+      }
+      if (start >= audioDuration) {
+        continue;
+      }
+
+      // 時間を ASS フォーマットに変換
+      const startStr = this._formatAssTime(start);
+      const endStr = this._formatAssTime(end);
+
+      // テキストの整形（長い行は折り返し）
+      const formattedText = this._formatLineTextV2(text);
+
+      // V1と同じエフェクト: \fad(300,300) + \move(540,1500,540,1380)
+      // 下から上に少し動きながらフェードイン/アウト
+      const effectText = `{\\fad(300,300)\\move(540,1500,540,1380)}${formattedText}`;
+
+      dialogLines.push(`Dialogue: 0,${startStr},${endStr},Default,,0,0,0,,${effectText}`);
+    }
+
+    return header + dialogLines.join('\n') + '\n';
+  }
+
+  /**
+   * V2: 行テキストの整形（長すぎる場合は折り返し）
+   * @private
+   */
+  _formatLineTextV2(text) {
+    // 既存の改行を \N に変換
+    let formatted = text.replace(/\n/g, '\\N');
+
+    // 1行が長すぎる場合は自動折り返し（約30文字で折り返し）
+    const maxLineLength = 30;
+
+    if (this._countTextLength(formatted) > maxLineLength && !formatted.includes('\\N')) {
+      formatted = this._autoWrapText(formatted, maxLineLength);
+    }
+
+    return formatted;
+  }
+
+  /**
+   * テキストの表示長をカウント（日本語は1、ASCIIは0.5）
+   * @private
+   */
+  _countTextLength(text) {
+    let count = 0;
+    for (const char of text) {
+      if (char.charCodeAt(0) < 128) {
+        count += 0.5;
+      } else {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * テキストを自動折り返し（2行まで）
+   * @private
+   */
+  _autoWrapText(text, maxLength) {
+    // 簡易実装: 中央付近で分割
+    const chars = [...text];
+    const totalLength = this._countTextLength(text);
+
+    if (totalLength <= maxLength) {
+      return text;
+    }
+
+    // 目標: 半分の位置で分割
+    const targetLength = totalLength / 2;
+    let currentLength = 0;
+    let splitIndex = 0;
+
+    for (let i = 0; i < chars.length; i++) {
+      const charLength = chars[i].charCodeAt(0) < 128 ? 0.5 : 1;
+      currentLength += charLength;
+
+      if (currentLength >= targetLength) {
+        splitIndex = i + 1;
+        break;
+      }
+    }
+
+    // 分割して \N で結合
+    const firstPart = chars.slice(0, splitIndex).join('');
+    const secondPart = chars.slice(splitIndex).join('');
+
+    return `${firstPart}\\N${secondPart}`;
+  }
 }
 
 module.exports = VideoService;
