@@ -906,7 +906,9 @@ Songift運営チーム`;
       data: {
         sourceAudioPath: sourceAudioPath,
         outputPath: fullVideoPath,
-        backgroundImagePath: "default",
+        backgroundImagePath: "default", // 互換用に残す
+        backgroundTemplateId: order.backgroundTemplateId || "t1",
+        lyricsText: order.generatedLyrics || "",
       },
       timeout: 480000, // 8分タイムアウト
     });
