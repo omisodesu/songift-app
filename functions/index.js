@@ -906,7 +906,9 @@ Songift運営チーム`;
       data: {
         sourceAudioPath: sourceAudioPath,
         outputPath: fullVideoPath,
-        backgroundImagePath: "default",
+        backgroundImagePath: "default", // 互換用に残す
+        backgroundTemplateId: order.backgroundTemplateId || "t1",
+        lyricsText: order.generatedLyrics || "",
       },
       timeout: 480000, // 8分タイムアウト
     });
@@ -1224,6 +1226,8 @@ exports.getAdminFullSignedUrl = onCall({
  */
 exports.processPayment = onRequest({
   cors: true,
+  memory: "1GiB",
+  timeoutSeconds: 120,
   secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
@@ -1257,10 +1261,15 @@ exports.processPayment = onRequest({
 
     const order = orderDoc.data();
 
-    // 既に支払い済みの場合はスキップ
-    if (order.isPaid) {
-      console.log(`[processPayment] Order ${orderId} is already paid`);
-      res.status(200).json({success: true, message: "既に支払い済みです"});
+    // idempotent化: 支払い済み かつ 納品済み なら完全スキップ
+    const alreadyPaid = !!order.isPaid;
+    const alreadySent = order.deliveryStatus === "sent";
+
+    console.log(`[processPayment] orderId=${orderId}, alreadyPaid=${alreadyPaid}, alreadySent=${alreadySent}, email=${order.userEmail}`);
+
+    if (alreadyPaid && alreadySent) {
+      console.log(`[processPayment] Order ${orderId} already paid and delivered, skipping`);
+      res.status(200).json({success: true, message: "既に支払い済み・納品済みです"});
       return;
     }
 
@@ -1270,13 +1279,16 @@ exports.processPayment = onRequest({
       return;
     }
 
-    // 2. Firestore更新: isPaid = true
-    await orderRef.update({
-      isPaid: true,
-      paidAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log(`[processPayment] Order ${orderId} marked as paid`);
+    // 2. isPaid がまだなら更新
+    if (!alreadyPaid) {
+      await orderRef.update({
+        isPaid: true,
+        paidAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`[processPayment] Order ${orderId} marked as paid`);
+    } else {
+      console.log(`[processPayment] Order ${orderId} already paid, proceeding to delivery`);
+    }
 
     // 3. フル動画MP4の署名URL取得
     const bucket = admin.storage().bucket();
@@ -1365,20 +1377,48 @@ Songift運営チーム
 
       await sgMail.send(msg);
       console.log(`[processPayment] MP4 delivery email sent to ${emailDestination.to}`);
+
+      // 5. Firestoreに送信ステータス記録（メール送信成功時のみ）
+      await orderRef.update({
+        deliveryStatus: "sent",
+        deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "支払い処理が完了し、MP4動画をメールでお送りしました",
+      });
+    } else {
+      // STG環境でメール送信がスキップされた場合
+      console.log(`[processPayment] Email skipped (STG environment without override address)`);
+
+      await orderRef.update({
+        deliveryStatus: "skipped",
+        deliverySkippedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "支払い処理が完了しました（STG環境: メール送信はスキップされました）",
+      });
     }
-
-    // 5. Firestoreに送信ステータス記録
-    await orderRef.update({
-      deliveryStatus: "sent",
-      deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    res.status(200).json({
-      success: true,
-      message: "支払い処理が完了し、MP4動画をメールでお送りしました",
-    });
   } catch (error) {
     console.error("[processPayment] Error:", error);
+
+    // エラー時: deliveryStatus を "error" に更新（再試行可能にする）
+    const {orderId} = req.body;
+    if (orderId) {
+      try {
+        await admin.firestore().collection("orders").doc(orderId).update({
+          deliveryStatus: "error",
+          deliveryError: error.message,
+          deliveryErrorAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        console.log(`[processPayment] Order ${orderId} marked as delivery error`);
+      } catch (updateErr) {
+        console.error("[processPayment] Failed to update delivery error status:", updateErr);
+      }
+    }
 
     res.status(500).json({
       error: "支払い処理に失敗しました",

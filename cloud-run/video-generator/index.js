@@ -94,18 +94,27 @@ app.post('/generate-preview-audio', async (req, res) => {
  * {
  *   "sourceAudioPath": "audios/order123/source.mp3",
  *   "outputPath": "videos/order123/full.mp4",
- *   "backgroundImagePath": "default"  // オプション、デフォルトは "default"
+ *   "backgroundImagePath": "default",  // 互換用（静止画フォールバック）
+ *   "backgroundTemplateId": "t1",      // テンプレート動画ID (t1/t2/t3)
+ *   "lyricsText": "歌詞テキスト..."    // 歌詞（ASS字幕用、空でもOK）
  * }
  *
  * レスポンス:
  * {
  *   "success": true,
  *   "outputPath": "videos/order123/full.mp4",
- *   "durationSeconds": 180
+ *   "audioDurationSeconds": 180,
+ *   "videoDurationSeconds": 181
  * }
  */
 app.post('/generate-full-video', async (req, res) => {
-  const { sourceAudioPath, outputPath, backgroundImagePath = 'default' } = req.body;
+  const {
+    sourceAudioPath,
+    outputPath,
+    backgroundImagePath = 'default',
+    backgroundTemplateId = 't1',
+    lyricsText = ''
+  } = req.body;
 
   // バリデーション
   if (!sourceAudioPath || !outputPath) {
@@ -115,29 +124,92 @@ app.post('/generate-full-video', async (req, res) => {
     });
   }
 
+  // 一時ファイルパス
+  const timestamp = Date.now();
+  const tempAudioPath = `/tmp/audio_${timestamp}.mp3`;
+  const tempTemplatePath = `/tmp/template_${timestamp}.mp4`;
+  const tempAssPath = `/tmp/lyrics_${timestamp}.ass`;
+  const tempVideoPath = `/tmp/video_${timestamp}.mp4`;
+
+  // cleanup用にパスを収集
+  const tempFiles = [tempAudioPath, tempVideoPath];
+
   try {
     console.log(`[Full Video] Starting generation for ${sourceAudioPath}`);
-
-    // 一時ファイルパス
-    const tempAudioPath = `/tmp/audio_${Date.now()}.mp3`;
-    const tempVideoPath = `/tmp/video_${Date.now()}.mp4`;
+    console.log(`[Full Video] Template: ${backgroundTemplateId}, Lyrics: ${lyricsText ? 'yes' : 'no'}`);
 
     // 1. Storage からソース音声をダウンロード
     await storageService.downloadFile(sourceAudioPath, tempAudioPath);
 
-    // 2. フル動画を生成（静止画背景 + 音声）
-    const result = await videoService.generateFullVideo(
-      tempAudioPath,
-      tempVideoPath,
-      backgroundImagePath
-    );
+    // 2. テンプレート動画をStorageからダウンロード
+    let templateDownloaded = false;
+    const templateStoragePath = `video-templates/${backgroundTemplateId}.mp4`;
 
-    // 3. Storage にアップロード
+    try {
+      console.log(`[Full Video] Downloading template: ${templateStoragePath}`);
+      await storageService.downloadFile(templateStoragePath, tempTemplatePath);
+      templateDownloaded = true;
+      tempFiles.push(tempTemplatePath);
+      console.log(`[Full Video] Template downloaded successfully`);
+    } catch (templateError) {
+      console.warn(`[Full Video] Template ${backgroundTemplateId} download failed: ${templateError.message}`);
+      // フォールバック: t1で再試行
+      if (backgroundTemplateId !== 't1') {
+        try {
+          console.log(`[Full Video] Trying fallback template: t1`);
+          await storageService.downloadFile('video-templates/t1.mp4', tempTemplatePath);
+          templateDownloaded = true;
+          tempFiles.push(tempTemplatePath);
+          console.log(`[Full Video] Fallback template downloaded successfully`);
+        } catch (fallbackError) {
+          console.warn(`[Full Video] Fallback template also failed: ${fallbackError.message}`);
+        }
+      }
+    }
+
+    // 3. 歌詞がある場合はASSファイルを生成
+    let assPath = null;
+    if (lyricsText && lyricsText.trim()) {
+      console.log(`[Full Video] Generating ASS subtitles`);
+      // 音声尺を取得してからASS生成
+      const audioDuration = await videoService.getAudioDuration(tempAudioPath);
+      await videoService.generateAssFile(lyricsText, audioDuration, tempAssPath);
+      assPath = tempAssPath;
+      tempFiles.push(tempAssPath);
+      console.log(`[Full Video] ASS file generated`);
+    }
+
+    // 4. 動画生成
+    let result;
+    if (templateDownloaded) {
+      // テンプレート動画ベースで生成
+      console.log(`[Full Video] Generating video from template`);
+      result = await videoService.generateFullVideo({
+        audioPath: tempAudioPath,
+        outputPath: tempVideoPath,
+        templateVideoPath: tempTemplatePath,
+        assPath: assPath,
+        backgroundImagePath: backgroundImagePath
+      });
+    } else {
+      // 従来互換: 静止画ベースで生成
+      console.log(`[Full Video] Generating video from static image (fallback)`);
+      result = await videoService.generateFullVideo(
+        tempAudioPath,
+        tempVideoPath,
+        backgroundImagePath
+      );
+    }
+
+    // 5. Storage にアップロード
     await storageService.uploadFile(tempVideoPath, outputPath);
 
-    // 4. 一時ファイル削除
-    await fs.unlink(tempAudioPath).catch(console.error);
-    await fs.unlink(tempVideoPath).catch(console.error);
+    // 6. 一時ファイル削除
+    for (const tempFile of tempFiles) {
+      await fs.unlink(tempFile).catch((e) => {
+        console.warn(`[Full Video] Failed to delete temp file: ${tempFile}`, e.message);
+      });
+    }
 
     console.log(`[Full Video] Completed: ${outputPath}`);
 
@@ -150,6 +222,12 @@ app.post('/generate-full-video', async (req, res) => {
 
   } catch (error) {
     console.error('[Full Video] Error:', error);
+
+    // エラー時も一時ファイル削除を試みる
+    for (const tempFile of tempFiles) {
+      await fs.unlink(tempFile).catch(() => {});
+    }
+
     res.status(500).json({
       success: false,
       error: error.message

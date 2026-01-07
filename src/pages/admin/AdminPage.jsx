@@ -6,6 +6,7 @@ import {
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from '../../lib/firebase';
 import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS, CHANNEL_QUESTIONS } from '../../lib/feedbackApi';
+import { getBackgroundTemplate } from '../../lib/backgroundTemplates';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
@@ -555,22 +556,30 @@ const AdminPage = ({ user }) => {
     }
   };
 
-  // Phase1: 手動Paywall - 支払い済みにする
+  // Phase1: 手動Paywall - 支払い済みにする + 納品メール送信
   const handleMarkAsPaid = async (order) => {
-    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\nMP4動画をメールでお送りします。`)) {
+    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\nMP4動画を添付した納品メールを送信します。`)) {
       return;
     }
 
     try {
-      await updateDoc(doc(db, "orders", order.id), {
-        isPaid: true,
-        paidAt: new Date(),
+      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const response = await fetch(`${functionsUrl}/processPayment`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ orderId: order.id }),
       });
 
-      alert("✅ 支払い済みに変更しました。\n\n※ 顧客ページの支払いボタンからMP4メールを自動送信できます。");
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || result.message || '処理に失敗しました');
+      }
+
+      alert(`✅ ${result.message}`);
     } catch (error) {
-      console.error("Paywall更新エラー:", error);
-      alert("❌ 更新に失敗しました。\n\nエラー: " + error.message);
+      console.error("支払い処理エラー:", error);
+      alert("❌ 処理に失敗しました。\n\nエラー: " + error.message);
     }
   };
 
@@ -1137,6 +1146,20 @@ const AdminPage = ({ user }) => {
 
                 <div className="bg-blue-50 p-4 rounded border border-blue-200">
                   <h4 className="font-bold text-gray-700 mb-2">3. 動画生成 🎬</h4>
+
+                  {/* 背景テンプレート表示 */}
+                  {(() => {
+                    const template = getBackgroundTemplate(order.backgroundTemplateId || 't1');
+                    return (
+                      <div className="flex items-center gap-2 mb-3 p-2 bg-white rounded border">
+                        <div className={`w-6 h-9 rounded ${template.previewClass}`}></div>
+                        <span className="text-sm text-gray-700">
+                          背景テンプレ: <span className="font-medium">{template.name}</span>
+                          <span className="text-gray-400 ml-1">({template.id})</span>
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {/* 生成状態表示 */}
                   {order.videoGenerationStatus === "processing" && (

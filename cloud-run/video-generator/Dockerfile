@@ -1,9 +1,9 @@
 # Node.js 20 + ffmpeg
 FROM node:20-slim
 
-# ffmpegのインストール
+# ffmpegと日本語フォントのインストール
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg fonts-noto-cjk && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
