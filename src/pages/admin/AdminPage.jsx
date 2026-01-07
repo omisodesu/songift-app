@@ -556,22 +556,30 @@ const AdminPage = ({ user }) => {
     }
   };
 
-  // Phase1: 手動Paywall - 支払い済みにする
+  // Phase1: 手動Paywall - 支払い済みにする + 納品メール送信
   const handleMarkAsPaid = async (order) => {
-    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\nMP4動画をメールでお送りします。`)) {
+    if (!confirm(`${order.targetName}様を「支払い済み」にしますか？\n\nMP4動画を添付した納品メールを送信します。`)) {
       return;
     }
 
     try {
-      await updateDoc(doc(db, "orders", order.id), {
-        isPaid: true,
-        paidAt: new Date(),
+      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const response = await fetch(`${functionsUrl}/processPayment`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ orderId: order.id }),
       });
 
-      alert("✅ 支払い済みに変更しました。\n\n※ 顧客ページの支払いボタンからMP4メールを自動送信できます。");
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || result.message || '処理に失敗しました');
+      }
+
+      alert(`✅ ${result.message}`);
     } catch (error) {
-      console.error("Paywall更新エラー:", error);
-      alert("❌ 更新に失敗しました。\n\nエラー: " + error.message);
+      console.error("支払い処理エラー:", error);
+      alert("❌ 処理に失敗しました。\n\nエラー: " + error.message);
     }
   };
 
