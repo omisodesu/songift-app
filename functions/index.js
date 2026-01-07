@@ -909,6 +909,9 @@ Songift運営チーム`;
         backgroundImagePath: "default", // 互換用に残す
         backgroundTemplateId: order.backgroundTemplateId || "t1",
         lyricsText: order.generatedLyrics || "",
+        // V2 lyrics alignment: Suno timestamped lyrics用
+        sunoTaskId: order.sunoTaskId || null,
+        selectedSongUrl: order.selectedSongUrl || null,
       },
       timeout: 480000, // 8分タイムアウト
     });
