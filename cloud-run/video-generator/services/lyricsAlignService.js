@@ -59,12 +59,16 @@ class LyricsAlignService {
 
   /**
    * 単語の前処理
+   * - セクションタグ ([Verse], [Chorus], 等) の除去
    * - start/end の逆転チェック
    * - end が無い場合の補完
    * - 無効データの除去
    */
   _preprocessWords(words, audioDuration) {
     const result = [];
+
+    // セクションタグのパターン: [Verse], [Chorus], [Pre-Chorus], [Bridge], [Outro], [Intro], etc.
+    const sectionTagPattern = /\[(Verse|Chorus|Pre-Chorus|Bridge|Outro|Intro|Hook|Interlude|Breakdown|Drop|Verse\s*\d*|Chorus\s*\d*)\]/gi;
 
     for (let i = 0; i < words.length; i++) {
       const word = words[i];
@@ -73,6 +77,17 @@ class LyricsAlignService {
       if (!word.word || word.word.trim() === '') {
         continue;
       }
+
+      // セクションタグを除去
+      let cleanedWord = word.word.replace(sectionTagPattern, '').trim();
+
+      // タグ除去後に空になった場合はスキップ
+      if (cleanedWord === '') {
+        continue;
+      }
+
+      // 元のwordオブジェクトを更新
+      word.word = cleanedWord;
 
       // startが無効な場合スキップ
       if (typeof word.start !== 'number' || word.start < 0) {
