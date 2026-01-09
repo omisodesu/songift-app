@@ -34,9 +34,10 @@ class SunoService {
     }
 
     try {
+      // Step 1: record-info から audioId を取得
       console.log(`[SunoService] Fetching record-info for taskId: ${sunoTaskId}`);
 
-      const response = await fetch(
+      const recordInfoResponse = await fetch(
         `${this.baseUrl}/generate/record-info?taskId=${sunoTaskId}`,
         {
           headers: {
@@ -46,20 +47,20 @@ class SunoService {
         }
       );
 
-      if (!response.ok) {
-        console.warn(`[SunoService] API request failed: ${response.status} ${response.statusText}`);
+      if (!recordInfoResponse.ok) {
+        console.warn(`[SunoService] record-info request failed: ${recordInfoResponse.status} ${recordInfoResponse.statusText}`);
         return null;
       }
 
-      const result = await response.json();
+      const recordInfoResult = await recordInfoResponse.json();
 
-      if (result.code !== 200) {
-        console.warn(`[SunoService] API returned error code: ${result.code}, msg: ${result.msg}`);
+      if (recordInfoResult.code !== 200) {
+        console.warn(`[SunoService] record-info returned error code: ${recordInfoResult.code}, msg: ${recordInfoResult.msg}`);
         return null;
       }
 
       // sunoData配列から選択された曲を見つける
-      const sunoData = result.data?.response?.sunoData || [];
+      const sunoData = recordInfoResult.data?.response?.sunoData || [];
 
       if (sunoData.length === 0) {
         console.warn('[SunoService] sunoData is empty');
@@ -78,45 +79,48 @@ class SunoService {
         return null;
       }
 
-      console.log(`[SunoService] Found selected song: id=${selectedSong.id}`);
+      const audioId = selectedSong.id;
+      console.log(`[SunoService] Found selected song: audioId=${audioId}`);
 
-      // alignedWords を探索（複数の可能なパスを試す）
-      let alignedWords = null;
+      // Step 2: get-timestamped-lyrics から alignedWords を取得
+      console.log(`[SunoService] Fetching timestamped lyrics for taskId: ${sunoTaskId}, audioId: ${audioId}`);
 
-      // パス1: song.alignedWords
-      if (Array.isArray(selectedSong.alignedWords) && selectedSong.alignedWords.length > 0) {
-        alignedWords = selectedSong.alignedWords;
-        console.log(`[SunoService] Found alignedWords at song.alignedWords (${alignedWords.length} items)`);
-      }
-      // パス2: song.lyricsAlignment.alignedWords
-      else if (selectedSong.lyricsAlignment?.alignedWords &&
-               Array.isArray(selectedSong.lyricsAlignment.alignedWords) &&
-               selectedSong.lyricsAlignment.alignedWords.length > 0) {
-        alignedWords = selectedSong.lyricsAlignment.alignedWords;
-        console.log(`[SunoService] Found alignedWords at song.lyricsAlignment.alignedWords (${alignedWords.length} items)`);
-      }
-      // パス3: song.lyrics_alignment.aligned_words (snake_case版)
-      else if (selectedSong.lyrics_alignment?.aligned_words &&
-               Array.isArray(selectedSong.lyrics_alignment.aligned_words) &&
-               selectedSong.lyrics_alignment.aligned_words.length > 0) {
-        alignedWords = selectedSong.lyrics_alignment.aligned_words;
-        console.log(`[SunoService] Found alignedWords at song.lyrics_alignment.aligned_words (${alignedWords.length} items)`);
-      }
+      const lyricsResponse = await fetch(
+        `${this.baseUrl}/generate/get-timestamped-lyrics`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            taskId: sunoTaskId,
+            audioId: audioId
+          })
+        }
+      );
 
-      // パス4: result.data.response.alignedWords (トップレベル)
-      if (!alignedWords && result.data?.response?.alignedWords &&
-          Array.isArray(result.data.response.alignedWords) &&
-          result.data.response.alignedWords.length > 0) {
-        alignedWords = result.data.response.alignedWords;
-        console.log(`[SunoService] Found alignedWords at response.alignedWords (${alignedWords.length} items)`);
-      }
-
-      if (!alignedWords) {
-        console.warn('[SunoService] alignedWords not found in any expected location');
-        // デバッグ用: 利用可能なキーをログ出力
-        console.log(`[SunoService] Available keys in selectedSong: ${Object.keys(selectedSong).join(', ')}`);
+      if (!lyricsResponse.ok) {
+        console.warn(`[SunoService] get-timestamped-lyrics request failed: ${lyricsResponse.status} ${lyricsResponse.statusText}`);
         return null;
       }
+
+      const lyricsResult = await lyricsResponse.json();
+
+      if (lyricsResult.code !== 200) {
+        console.warn(`[SunoService] get-timestamped-lyrics returned error code: ${lyricsResult.code}, msg: ${lyricsResult.msg}`);
+        return null;
+      }
+
+      const alignedWords = lyricsResult.data?.alignedWords;
+
+      if (!Array.isArray(alignedWords) || alignedWords.length === 0) {
+        console.warn('[SunoService] alignedWords not found or empty in get-timestamped-lyrics response');
+        console.log(`[SunoService] Available keys in response data: ${Object.keys(lyricsResult.data || {}).join(', ')}`);
+        return null;
+      }
+
+      console.log(`[SunoService] Retrieved ${alignedWords.length} aligned words from get-timestamped-lyrics`);
 
       // alignedWords の正規化（異なるフォーマットを統一）
       const normalizedWords = this._normalizeAlignedWords(alignedWords);
@@ -126,7 +130,7 @@ class SunoService {
         return null;
       }
 
-      console.log(`[SunoService] Successfully retrieved ${normalizedWords.length} aligned words`);
+      console.log(`[SunoService] Successfully normalized ${normalizedWords.length} aligned words`);
       return normalizedWords;
 
     } catch (error) {
@@ -146,8 +150,9 @@ class SunoService {
       .map(w => {
         // 様々なフォーマットに対応
         const word = w.word || w.text || w.value || '';
-        const start = w.start ?? w.startTime ?? w.start_time ?? null;
-        const end = w.end ?? w.endTime ?? w.end_time ?? null;
+        // Suno API: startS/endS, 他のAPI: start/end, startTime/endTime
+        const start = w.start ?? w.startS ?? w.startTime ?? w.start_time ?? null;
+        const end = w.end ?? w.endS ?? w.endTime ?? w.end_time ?? null;
 
         // 不正なデータをスキップ
         if (!word || typeof word !== 'string') {
