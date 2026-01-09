@@ -99,9 +99,13 @@ class VideoService {
             '-map', '0:v:0',           // テンプレートの映像のみ
             '-map', '1:a:0',           // MP3の音声のみ（テンプレート音声は捨てる）
             '-c:v', 'libx264',         // H.264 コーデック
+            '-crf', '28',              // 品質設定（23→28で圧縮率向上）
+            '-maxrate', '1500k',       // 最大ビットレート制限
+            '-bufsize', '3000k',       // バッファサイズ（maxrateの2倍）
+            '-preset', 'medium',       // エンコード速度/品質バランス
             '-pix_fmt', 'yuv420p',     // ピクセルフォーマット（互換性）
             '-c:a', 'aac',             // AAC 音声コーデック
-            '-b:a', '192k',            // 音声ビットレート
+            '-b:a', '128k',            // 音声ビットレート（192k→128k）
             '-shortest',               // 短い方に合わせる（音声尺）
             '-movflags', '+faststart', // ストリーミング最適化
             '-r', '30',                // フレームレート
@@ -179,9 +183,13 @@ class VideoService {
           .input(audioPath)
           .outputOptions([
             '-c:v libx264',  // H.264 コーデック
+            '-crf 28',  // 品質設定（23→28で圧縮率向上）
+            '-maxrate 1500k',  // 最大ビットレート制限
+            '-bufsize 3000k',  // バッファサイズ（maxrateの2倍）
+            '-preset medium',  // エンコード速度/品質バランス
             '-tune stillimage',  // 静止画最適化
             '-c:a aac',  // AAC 音声コーデック
-            '-b:a 192k',  // 音声ビットレート
+            '-b:a 128k',  // 音声ビットレート（192k→128k）
             '-pix_fmt yuv420p',  // ピクセルフォーマット（互換性）
             `-t ${videoDuration}`,  // 動画の長さを明示的に指定
             '-vf scale=1080:1920',  // 縦型1080x1920にリサイズ
