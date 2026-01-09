@@ -552,7 +552,12 @@ const AdminPage = ({ user }) => {
       alert("✅ 動画アセット生成が完了しました！");
     } catch (error) {
       console.error("動画生成エラー:", error);
-      alert("❌ 動画生成に失敗しました。\n\nエラー: " + error.message);
+      // deadline-exceededの場合はバックグラウンドで処理中
+      if (error.message?.includes("deadline") || error.code === "deadline-exceeded") {
+        alert("⏳ 処理に時間がかかっています。\n\nバックグラウンドで動画生成を継続中です。\nしばらくお待ちください（画面は自動更新されます）");
+      } else {
+        alert("❌ 動画生成に失敗しました。\n\nエラー: " + error.message);
+      }
     }
   };
 

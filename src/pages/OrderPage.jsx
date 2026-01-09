@@ -35,7 +35,7 @@ const OrderPage = ({ user = null }) => {
   const [formData, setFormData] = useState({
     targetName: '',
     targetColor: '',
-    targetFeeling: [],
+    targetFeeling: '',
     magicWord: '',
     magicSpell: '',
     // プロモード用
@@ -71,17 +71,6 @@ const OrderPage = ({ user = null }) => {
     }
 
     setFormData({ ...formData, [name]: value });
-  };
-
-  const handleCheckboxChange = (e) => {
-    const { value, checked } = e.target;
-    let newFeelings = [...formData.targetFeeling];
-    if (checked) {
-      newFeelings.push(value);
-    } else {
-      newFeelings = newFeelings.filter((item) => item !== value);
-    }
-    setFormData({ ...formData, targetFeeling: newFeelings });
   };
 
   const handleProCheckboxChange = (e) => {
@@ -232,7 +221,7 @@ const OrderPage = ({ user = null }) => {
                 <div className="space-y-2">
                   {FEELINGS.map((f) => (
                     <label key={f.label} className="flex items-center space-x-2 cursor-pointer">
-                      <input type="checkbox" value={f.value} onChange={handleCheckboxChange} className="form-checkbox text-pink-500" />
+                      <input type="radio" name="targetFeeling" value={f.value} onChange={handleChange} required className="form-radio text-pink-500" />
                       <span>{f.label}</span>
                     </label>
                   ))}
