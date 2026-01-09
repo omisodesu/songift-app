@@ -1169,14 +1169,25 @@ const AdminPage = ({ user }) => {
                   )}
 
                   {order.videoGenerationStatus === "failed" && (
-                    <div className="text-center py-2 text-red-600 text-sm mb-2">
-                      ❌ 生成失敗: {order.videoGenerationError}
-                    </div>
+                    order.videoGenerationError?.includes("deadline") ? (
+                      <div className="text-center py-2 text-yellow-600 text-sm mb-2">
+                        ⏳ バックグラウンドで処理中...（しばらくお待ちください）
+                      </div>
+                    ) : (
+                      <div className="text-center py-2 text-red-600 text-sm mb-2">
+                        ❌ 生成失敗: {order.videoGenerationError}
+                      </div>
+                    )
                   )}
 
                   {order.videoGenerationStatus === "completed" && (
                     <div className="text-center py-2 text-green-600 text-sm font-bold mb-2">
                       ✅ 生成完了
+                      {order.subtitleMode && (
+                        <span className="ml-2 text-xs font-normal">
+                          {order.subtitleMode === "v2" ? "🎵 V2字幕" : "📝 V1字幕"}
+                        </span>
+                      )}
                     </div>
                   )}
 

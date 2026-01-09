@@ -834,7 +834,51 @@ exports.generateVideoAssets = onCall({
       previewAudioPath: previewAudioPath,
     });
 
-    // 4.5. プレビュー案内メールを自動送信
+    // 5. Cloud Run /generate-full-video 呼び出し
+    const fullVideoPath = `videos/${orderId}/full.mp4`;
+
+    console.log(`[generateVideoAssets] Calling Cloud Run: /generate-full-video`);
+
+    const videoResponse = await client.request({
+      url: `${videoGeneratorUrl}/generate-full-video`,
+      method: "POST",
+      data: {
+        sourceAudioPath: sourceAudioPath,
+        outputPath: fullVideoPath,
+        backgroundImagePath: "default", // 互換用に残す
+        backgroundTemplateId: order.backgroundTemplateId || "t1",
+        lyricsText: order.generatedLyrics || "",
+        // V2 lyrics alignment: Suno timestamped lyrics用
+        sunoTaskId: order.sunoTaskId || null,
+        selectedSongUrl: order.selectedSongUrl || null,
+      },
+      timeout: 480000, // 8分タイムアウト
+    });
+
+    if (!videoResponse.data.success) {
+      throw new Error(`Full video generation failed: ${videoResponse.data.error}`);
+    }
+
+    console.log(`[generateVideoAssets] Full video generated: ${fullVideoPath}`);
+
+    // duration情報とsubtitleModeを取得
+    const audioDurationSec = videoResponse.data.audioDurationSeconds || null;
+    const videoDurationSec = videoResponse.data.videoDurationSeconds || null;
+    const subtitleMode = videoResponse.data.subtitleMode || null; // 'v2' | 'v1' | null
+
+    // 6. Firestore更新: 完了
+    await orderDoc.ref.update({
+      fullVideoPath: fullVideoPath,
+      fullVideoAudioDurationSec: audioDurationSec,
+      fullVideoDurationSec: videoDurationSec,
+      subtitleMode: subtitleMode,
+      videoGenerationStatus: "completed",
+      videoGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[generateVideoAssets] Full video completed: ${fullVideoPath}, subtitleMode: ${subtitleMode}`);
+
+    // 7. プレビュー案内メールを自動送信（フル動画完成後に送信）
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
     const sendgridApiKey = process.env.SENDGRID_API_KEY;
@@ -894,46 +938,6 @@ Songift運営チーム`;
     } else {
       console.warn("[generateVideoAssets] SENDGRID_API_KEY not configured, skipping preview email");
     }
-
-    // 5. Cloud Run /generate-full-video 呼び出し
-    const fullVideoPath = `videos/${orderId}/full.mp4`;
-
-    console.log(`[generateVideoAssets] Calling Cloud Run: /generate-full-video`);
-
-    const videoResponse = await client.request({
-      url: `${videoGeneratorUrl}/generate-full-video`,
-      method: "POST",
-      data: {
-        sourceAudioPath: sourceAudioPath,
-        outputPath: fullVideoPath,
-        backgroundImagePath: "default", // 互換用に残す
-        backgroundTemplateId: order.backgroundTemplateId || "t1",
-        lyricsText: order.generatedLyrics || "",
-        // V2 lyrics alignment: Suno timestamped lyrics用
-        sunoTaskId: order.sunoTaskId || null,
-        selectedSongUrl: order.selectedSongUrl || null,
-      },
-      timeout: 480000, // 8分タイムアウト
-    });
-
-    if (!videoResponse.data.success) {
-      throw new Error(`Full video generation failed: ${videoResponse.data.error}`);
-    }
-
-    console.log(`[generateVideoAssets] Full video generated: ${fullVideoPath}`);
-
-    // duration情報を取得
-    const audioDurationSec = videoResponse.data.audioDurationSeconds || null;
-    const videoDurationSec = videoResponse.data.videoDurationSeconds || null;
-
-    // 6. Firestore更新: 完了
-    await orderDoc.ref.update({
-      fullVideoPath: fullVideoPath,
-      fullVideoAudioDurationSec: audioDurationSec,
-      fullVideoDurationSec: videoDurationSec,
-      videoGenerationStatus: "completed",
-      videoGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
 
     console.log(`[generateVideoAssets] Completed for order: ${orderId}`);
 
