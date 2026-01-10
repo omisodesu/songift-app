@@ -7,6 +7,8 @@ import { httpsCallable } from "firebase/functions";
 import { db, functions } from '../../lib/firebase';
 import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS, CHANNEL_QUESTIONS } from '../../lib/feedbackApi';
 import { getBackgroundTemplate } from '../../lib/backgroundTemplates';
+import { buildSimpleModePrompt } from '../../lib/prompts/simpleMode';
+import { buildProModePrompt } from '../../lib/prompts/proMode';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
@@ -209,120 +211,10 @@ const AdminPage = ({ user }) => {
     }
     if (!confirm(`${order.targetName}様のプロンプトを生成しますか？`)) return;
 
-    let systemPrompt = "";
-
-    if (order.plan === 'simple') {
-      // ---------------------------
-      // 簡単モード (Simple) のプロンプト
-      // ---------------------------
-      systemPrompt = `
-        あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
-        以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
-
-        【フォーム回答】
-        Q1. お誕生日の主役のお名前：${order.targetName}
-        Q2. その人を色で表すと：${order.targetColor}
-        Q3. その人といると、どんな気持ち：${Array.isArray(order.targetFeeling) ? order.targetFeeling.join(", ") : order.targetFeeling}
-        Q4. 魔法の言葉を一つ贈るなら：${order.magicWord}
-        Q5. その人の新しい一年に、どんな魔法をかけたい：${order.magicSpell}
-
-        【歌詞創作ルール（重要）】
-        Q4とQ5の選択肢をそのまま使わず、その「意味・感情・メッセージ」を理解して、自然で詩的な日本語の歌詞に創作してください。毎回異なる表現にしてください。
-
-        ■ Verse（8〜15文字程度、1〜2行）
-        Q4のメッセージの本質的な意味を、歌いやすく自然な日本語で表現してください。
-        (創作方針例)
-        - いつもありがとう → 感謝・支えへの気持ち
-        - 出会えて本当によかった → 出会いへの感謝・奇跡
-        - 夢を応援してるよ → 応援・サポート
-        - 最高の一年になりますように → 祝福・幸せへの願い
-        - あなたは特別な存在 → 唯一無二の存在感
-        - これからもよろしくね → 友情・関係継続
-        - ずっと友達でいてね → 永続的な友情
-
-        ■ Pre-Chorus（10〜18文字程度、1〜2行）
-        Q5の魔法に対応する、前向きで温かいオリジナルフレーズにしてください。
-        (創作方針例)
-        - キラキラ輝く魔法 → 夢・希望・輝き
-        - 勇気が湧く魔法 → 勇気・挑戦・成長
-        - 愛に包まれる魔法 → 愛情・温かさ・優しさ
-        - 笑顔が溢れる魔法 → 笑顔・楽しさ・喜び
-        - 希望の魔法 → 希望・出会い・新しい世界
-
-        【変換ルール】
-        ■ Q2（色）→ ジャンル・BPM・楽器の変換
-        - 情熱の赤 → Rock, 140 bpm, electric guitar, drums
-        - 元気な黄色 → J-pop, 100 bpm, piano, acoustic guitar
-        - 優しい青 → R&B, 75 bpm, piano, saxophone
-        - 癒しの緑 → Jazz, 90 bpm, piano, saxophone
-        - 個性的な紫 → J-pop, 100 bpm, synthesizer, electric guitar
-        - 純粋な白 → J-pop, 100 bpm, piano, strings
-
-        ■ Q3（気持ち）→ ボーカル性別の決定
-        - 「元気が出る」「笑える」「刺激的」が含まれる → male
-        - 「安心する」「幸せ」が含まれる → female
-        - その他・複数選択 → female
-
-        ■ Q5（魔法）→ 追加タグ
-        - キラキラ輝く魔法 → #bright #dreamy
-        - 勇気が湧く魔法 → #powerful #uplifting
-        - 愛に包まれる魔法 → #warm #emotional
-        - 笑顔が溢れる魔法 → #cheerful #fun
-        - 希望の魔法 → #hopeful #inspiring
-
-        【出力フォーマット (JSON)】
-        必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
-        {
-          "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
-          "sunoPrompt": "happy birthday | (Q2から変換したジャンル) | (Q2から変換したBPM) | key: C | (Q2から変換した楽器), clap | Japanese (Q3から決定したvocal) vocal | #birthday #upbeat #groovy (Q5から変換した追加タグ)"
-        }
-      `;
-    } else {
-      // ---------------------------
-      // プロモード (Pro) のプロンプト
-      // ---------------------------
-      systemPrompt = `
-        あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
-        以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
-
-        【フォーム回答】
-        質問1（ジャンル）：${order.proGenre}
-        質問2（楽器）：${Array.isArray(order.proInstruments) ? order.proInstruments.join(", ") : order.proInstruments}
-        質問3（性別）：${order.proGender}
-        質問4（名前）：${order.targetName}
-        質問5-1（メッセージ1）：${order.proMessage1}
-        質問5-2（メッセージ2）：${order.proMessage2}
-
-        【抽出・変換ルール】
-        ■ 質問1（ジャンル）→ ジャンル名とBPMを抽出
-        - J-pop（明るいポップス）→ ジャンル：J-pop / BPM：100 bpm
-        - R&B（おしゃれでスムーズ）→ ジャンル：R&B / BPM：75 bpm
-        - Rock（パワフルで熱い）→ ジャンル：Rock / BPM：140 bpm
-        - Jazz（大人っぽく洗練）→ ジャンル：Jazz / BPM：90 bpm
-        - Acoustic（温かみのある生音）→ ジャンル：Acoustic / BPM：90 bpm
-        - EDM（ノリノリでダンサブル）→ ジャンル：EDM / BPM：128 bpm
-        - Bossa Nova（リラックスした雰囲気）→ ジャンル：Bossa Nova / BPM：80 bpm
-
-        ■ 質問2（楽器）→ 英語部分を小文字で抽出
-        例）Piano（ピアノ）→ piano, Guitar（ギター）→ guitar, Saxophone（サックス）→ saxophone, etc.
-
-        ■ 質問3（性別）→ 英語部分を小文字で抽出
-        - 男性（Male）→ male
-        - 女性（Female）→ female
-
-        ■ 質問4（名前）→ そのまま使用
-
-        ■ 質問5-1、5-2（メッセージ）の変換ルール
-        - 歌詞部分：漢字をひらがなに変換（例：「素敵な一年」→「すてきないちねん」）
-
-        【出力フォーマット (JSON)】
-        必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
-        {
-          "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(質問5-1の回答をひらがな変換したもの)\\n[Pre-Chorus]\\n(質問5-2の回答をひらがな変換したもの)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
-          "sunoPrompt": "happy birthday | (質問1から抽出したジャンル名) | (質問1から抽出したBPM) | key: C | (質問2から抽出した楽器名小文字), clap | Japanese (質問3から抽出したvocal小文字) vocal | #birthday #upbeat #groovy"
-        }
-      `;
-    }
+    // プロンプトファイルから生成
+    const systemPrompt = order.plan === 'pro'
+      ? buildProModePrompt(order)
+      : buildSimpleModePrompt(order);
 
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
