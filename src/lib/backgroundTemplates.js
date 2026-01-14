@@ -12,15 +12,15 @@ export const BACKGROUND_TEMPLATES = [
   },
   {
     id: 't2',
-    name: 'シック',
-    desc: '落ち着き・大人',
-    previewClass: 'bg-gradient-to-r from-slate-600 to-zinc-800',
+    name: '穏やか',
+    desc: '温かい',
+    previewClass: 'bg-gradient-to-r from-amber-300 to-orange-500',
   },
   {
     id: 't3',
-    name: 'スカイ',
-    desc: '爽やか',
-    previewClass: 'bg-gradient-to-r from-sky-400 to-blue-600',
+    name: 'シック',
+    desc: '落ち着き・大人',
+    previewClass: 'bg-gradient-to-r from-slate-600 to-zinc-800',
   },
 ];
 
