@@ -4,6 +4,8 @@ const fs = require('fs').promises;
 const StorageService = require('./services/storageService');
 const AudioService = require('./services/audioService');
 const VideoService = require('./services/videoService');
+const SunoService = require('./services/sunoService');
+const LyricsAlignService = require('./services/lyricsAlignService');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -12,6 +14,8 @@ const port = process.env.PORT || 8080;
 const storageService = new StorageService();
 const audioService = new AudioService();
 const videoService = new VideoService();
+const sunoService = new SunoService();
+const lyricsAlignService = new LyricsAlignService();
 
 // JSONリクエストのパース
 app.use(express.json());
@@ -96,7 +100,9 @@ app.post('/generate-preview-audio', async (req, res) => {
  *   "outputPath": "videos/order123/full.mp4",
  *   "backgroundImagePath": "default",  // 互換用（静止画フォールバック）
  *   "backgroundTemplateId": "t1",      // テンプレート動画ID (t1/t2/t3)
- *   "lyricsText": "歌詞テキスト..."    // 歌詞（ASS字幕用、空でもOK）
+ *   "lyricsText": "歌詞テキスト...",   // 歌詞（ASS字幕用、空でもOK）
+ *   "sunoTaskId": "xxx-xxx",           // V2: Suno生成タスクID（optional）
+ *   "selectedSongUrl": "https://..."   // V2: 選択曲のURL（optional）
  * }
  *
  * レスポンス:
@@ -104,7 +110,8 @@ app.post('/generate-preview-audio', async (req, res) => {
  *   "success": true,
  *   "outputPath": "videos/order123/full.mp4",
  *   "audioDurationSeconds": 180,
- *   "videoDurationSeconds": 181
+ *   "videoDurationSeconds": 181,
+ *   "subtitleMode": "v2" | "v1"        // V2またはV1どちらが使用されたか
  * }
  */
 app.post('/generate-full-video', async (req, res) => {
@@ -113,7 +120,9 @@ app.post('/generate-full-video', async (req, res) => {
     outputPath,
     backgroundImagePath = 'default',
     backgroundTemplateId = 't1',
-    lyricsText = ''
+    lyricsText = '',
+    sunoTaskId = null,
+    selectedSongUrl = null
   } = req.body;
 
   // バリデーション
@@ -168,15 +177,67 @@ app.post('/generate-full-video', async (req, res) => {
     }
 
     // 3. 歌詞がある場合はASSファイルを生成
+    //    V2: Suno timestamped lyrics を試行、失敗時はV1へフォールバック
     let assPath = null;
+    let subtitleMode = null; // 'v2' | 'v1' | null
+
     if (lyricsText && lyricsText.trim()) {
-      console.log(`[Full Video] Generating ASS subtitles`);
-      // 音声尺を取得してからASS生成
+      // 音声尺を取得
       const audioDuration = await videoService.getAudioDuration(tempAudioPath);
-      await videoService.generateAssFile(lyricsText, audioDuration, tempAssPath);
-      assPath = tempAssPath;
-      tempFiles.push(tempAssPath);
-      console.log(`[Full Video] ASS file generated`);
+
+      // === V2: timestamped lyrics による同期字幕を試行 ===
+      let v2Success = false;
+
+      if (sunoTaskId && selectedSongUrl) {
+        console.log(`[Full Video] V2 subtitles: attempting (sunoTaskId=${sunoTaskId})`);
+
+        try {
+          // Suno APIからalignedWordsを取得
+          const alignedWords = await sunoService.getAlignedWords(sunoTaskId, selectedSongUrl);
+
+          if (alignedWords && alignedWords.length > 0) {
+            console.log(`[Full Video] V2 subtitles: got ${alignedWords.length} aligned words`);
+
+            // alignedWords → lineEvents に変換
+            const lineEvents = lyricsAlignService.convertToLineEvents(alignedWords, audioDuration);
+
+            if (lineEvents && lineEvents.length > 0) {
+              console.log(`[Full Video] V2 subtitles: generated ${lineEvents.length} line events`);
+
+              // V2でASS生成
+              await videoService.generateAssFileV2(lineEvents, audioDuration, tempAssPath);
+              assPath = tempAssPath;
+              tempFiles.push(tempAssPath);
+              v2Success = true;
+              subtitleMode = 'v2';
+              console.log(`[Full Video] V2 subtitles: enabled ✓`);
+            } else {
+              console.warn(`[Full Video] V2 subtitles: fallback to V1 (reason=lineEvents empty)`);
+            }
+          } else {
+            console.warn(`[Full Video] V2 subtitles: fallback to V1 (reason=alignedWords not found)`);
+          }
+        } catch (v2Error) {
+          console.warn(`[Full Video] V2 subtitles: fallback to V1 (reason=exception: ${v2Error.message})`);
+        }
+      } else {
+        console.log(`[Full Video] V2 subtitles: skipped (sunoTaskId or selectedSongUrl missing)`);
+      }
+
+      // === V1 フォールバック: 固定間隔3ブロック ===
+      if (!v2Success) {
+        console.log(`[Full Video] V1 subtitles: generating fixed-interval 3-block ASS`);
+        try {
+          await videoService.generateAssFile(lyricsText, audioDuration, tempAssPath);
+          assPath = tempAssPath;
+          tempFiles.push(tempAssPath);
+          subtitleMode = 'v1';
+          console.log(`[Full Video] V1 subtitles: enabled ✓`);
+        } catch (v1Error) {
+          console.error(`[Full Video] V1 subtitles: failed (${v1Error.message}), proceeding without subtitles`);
+          subtitleMode = null;
+        }
+      }
     }
 
     // 4. 動画生成
@@ -217,7 +278,8 @@ app.post('/generate-full-video', async (req, res) => {
       success: true,
       outputPath: outputPath,
       audioDurationSeconds: result.audioDurationSeconds,
-      videoDurationSeconds: result.videoDurationSeconds
+      videoDurationSeconds: result.videoDurationSeconds,
+      subtitleMode: subtitleMode // 'v2' | 'v1' | null
     });
 
   } catch (error) {
