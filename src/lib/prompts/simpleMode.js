@@ -54,7 +54,7 @@ export const SPELL_TO_TAGS = {
 // =====================================================
 
 export const VERSE_GUIDELINES = `
-■ Verse（8〜15文字程度、1〜2行）
+■ Verse（25〜30文字程度）
 Q4のメッセージの本質的な意味を、歌いやすく自然な日本語で表現してください。
 (創作方針例)
 - いつもありがとう → 感謝・支えへの気持ち
@@ -67,7 +67,7 @@ Q4のメッセージの本質的な意味を、歌いやすく自然な日本語
 `;
 
 export const PRE_CHORUS_GUIDELINES = `
-■ Pre-Chorus（10〜18文字程度、1〜2行）
+■ Pre-Chorus（25〜30文字程度）
 Q5の魔法に対応する、前向きで温かいオリジナルフレーズにしてください。
 (創作方針例)
 - キラキラ輝く魔法 → 夢・希望・輝き
@@ -133,7 +133,7 @@ ${PRE_CHORUS_GUIDELINES}
 【出力フォーマット (JSON)】
 必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
 {
-  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
   "sunoPrompt": "happy birthday | (Q2から変換したジャンル) | (Q2から変換したBPM) | key: (Q2から変換したKey) | (Q2から変換した楽器), clap | Japanese (Q3から決定したvocal) vocal | #birthday #upbeat #groovy (Q5から変換した追加タグ)"
 }
   `.trim();
