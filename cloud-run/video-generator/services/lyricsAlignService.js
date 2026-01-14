@@ -67,8 +67,8 @@ class LyricsAlignService {
   _preprocessWords(words, audioDuration) {
     const result = [];
 
-    // セクションタグのパターン: [Verse], [Chorus], [Pre-Chorus], [Bridge], [Outro], [Intro], etc.
-    const sectionTagPattern = /\[(Verse|Chorus|Pre-Chorus|Bridge|Outro|Intro|Hook|Interlude|Breakdown|Drop|Verse\s*\d*|Chorus\s*\d*)\]/gi;
+    // セクションタグのパターン: [Verse], [Chorus], [Pre-Chorus], [Final Chorus], [Bridge], [Outro], [Intro], etc.
+    const sectionTagPattern = /\[(Verse|Chorus|Pre-Chorus|Final\s*Chorus|Bridge|Outro|Intro|Hook|Interlude|Breakdown|Drop|Verse\s*\d*|Chorus\s*\d*)\]/gi;
 
     for (let i = 0; i < words.length; i++) {
       const word = words[i];
