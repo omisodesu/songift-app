@@ -7,6 +7,7 @@ const LandingA = lazy(() => import('../pages/landing/LandingA'));
 const LandingB = lazy(() => import('../pages/landing/LandingB'));
 const LandingC = lazy(() => import('../pages/landing/LandingC'));
 const LandingD = lazy(() => import('../pages/landing/LandingD'));
+const LandingE = lazy(() => import('../pages/landing/LandingE'));
 const OrderPage = lazy(() => import('../pages/OrderPage'));
 const OrderConfirmPage = lazy(() => import('../pages/OrderConfirmPage'));
 const AdminLoginPage = lazy(() => import('../pages/admin/AdminLoginPage'));
@@ -37,6 +38,7 @@ const AppRoutes = ({
         <Route path="/lp/b" element={<LandingB />} />
         <Route path="/lp/c" element={<LandingC />} />
         <Route path="/lp/d" element={<LandingD />} />
+        <Route path="/lp/e" element={<LandingE />} />
         <Route path="/order" element={<OrderPage />} />
         <Route path="/o/:orderId" element={<OrderConfirmPage />} />
         <Route path="/feedback" element={<FeedbackPage />} />
