@@ -42,6 +42,109 @@ app.get('/health', (req, res) => {
  *   "durationSeconds": 15
  * }
  */
+/**
+ * POST /generate-previews
+ * 2曲分のプレビュー音声（15秒）を生成
+ *
+ * リクエストボディ:
+ * {
+ *   "songs": [{ "id": "song1", "audio_url": "https://..." }, ...],
+ *   "orderId": "order123"
+ * }
+ *
+ * レスポンス:
+ * {
+ *   "success": true,
+ *   "results": [
+ *     { "songId": "song1", "audio_url": "https://...", "previewAudioPath": "audios/order123/preview_0.mp3", "previewReady": true },
+ *     ...
+ *   ]
+ * }
+ */
+app.post('/generate-previews', async (req, res) => {
+  const { songs, orderId } = req.body;
+
+  // バリデーション
+  if (!songs || !Array.isArray(songs) || songs.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required field: songs array'
+    });
+  }
+
+  if (!orderId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required field: orderId'
+    });
+  }
+
+  console.log(`[Generate Previews] Starting for order ${orderId}, ${songs.length} songs`);
+
+  const results = [];
+  const axios = require('axios');
+
+  for (let i = 0; i < songs.length; i++) {
+    const song = songs[i];
+    const timestamp = Date.now();
+    const tempSourcePath = `/tmp/source_${orderId}_${i}_${timestamp}.mp3`;
+    const tempOutputPath = `/tmp/preview_${orderId}_${i}_${timestamp}.mp3`;
+    const outputPath = `audios/${orderId}/preview_${i}.mp3`;
+
+    try {
+      console.log(`[Generate Previews] Processing song ${i}: ${song.id}`);
+
+      // 1. Suno URLから音声をダウンロード
+      const audioResponse = await axios.get(song.audio_url, {
+        responseType: 'arraybuffer',
+        timeout: 60000
+      });
+      await fs.writeFile(tempSourcePath, Buffer.from(audioResponse.data));
+
+      // 2. 15秒プレビュー生成
+      await audioService.generatePreview(tempSourcePath, tempOutputPath);
+
+      // 3. Storageにアップロード
+      await storageService.uploadFile(tempOutputPath, outputPath);
+
+      results.push({
+        id: song.id,
+        audio_url: song.audio_url,
+        previewAudioPath: outputPath,
+        previewReady: true
+      });
+
+      console.log(`[Generate Previews] Song ${i} completed: ${outputPath}`);
+
+      // 一時ファイル削除
+      await fs.unlink(tempSourcePath).catch(() => {});
+      await fs.unlink(tempOutputPath).catch(() => {});
+
+    } catch (error) {
+      console.error(`[Generate Previews] Failed for song ${i}:`, error.message);
+      results.push({
+        id: song.id,
+        audio_url: song.audio_url,
+        previewAudioPath: null,
+        previewReady: false,
+        error: error.message
+      });
+
+      // 一時ファイル削除（エラー時）
+      await fs.unlink(tempSourcePath).catch(() => {});
+      await fs.unlink(tempOutputPath).catch(() => {});
+    }
+  }
+
+  const allSuccess = results.every(r => r.previewReady);
+  console.log(`[Generate Previews] Completed for order ${orderId}, success: ${allSuccess}`);
+
+  res.json({
+    success: allSuccess,
+    results
+  });
+});
+
 app.post('/generate-preview-audio', async (req, res) => {
   const { sourceAudioPath, outputPath } = req.body;
 

@@ -22,6 +22,10 @@ const OrderConfirmPage = () => {
   const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
 
+  // 2曲選択用の状態
+  const [previewSignedUrls, setPreviewSignedUrls] = useState([]);
+  const [selectLoading, setSelectLoading] = useState(false);
+
   // 問い合わせモーダル
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
 
@@ -107,7 +111,7 @@ const OrderConfirmPage = () => {
     fetchOrder();
   }, [orderId, token]);
 
-  // Phase1: プレビュー音声の署名URL取得
+  // Phase1: プレビュー音声の署名URL取得（1曲選択後）
   useEffect(() => {
     if (order && order.previewAudioPath) {
       const fetchPreviewSignedUrl = async () => {
@@ -122,6 +126,46 @@ const OrderConfirmPage = () => {
       fetchPreviewSignedUrl();
     }
   }, [order, orderId, token]);
+
+  // 2曲のプレビュー署名URL取得（previews_ready状態時）
+  useEffect(() => {
+    if (order?.status === "previews_ready" && order.generatedSongs && order.generatedSongs.length > 0) {
+      const fetchUrls = async () => {
+        const urls = await Promise.all(
+          order.generatedSongs.map(async (song, index) => {
+            try {
+              const getPreviewUrl = httpsCallable(functions, "getPreviewSignedUrlBySongIndex");
+              const result = await getPreviewUrl({ orderId, token, songIndex: index });
+              return result.data.signedUrl;
+            } catch (err) {
+              console.error(`Failed to get preview URL for song ${index}:`, err);
+              return null;
+            }
+          })
+        );
+        setPreviewSignedUrls(urls);
+      };
+      fetchUrls();
+    }
+  }, [order, orderId, token]);
+
+  // 曲選択ハンドラ
+  const handleSelectSong = async (songIndex) => {
+    if (!window.confirm('この曲を選択しますか？選択後は変更できません。')) return;
+
+    setSelectLoading(true);
+    try {
+      const selectSong = httpsCallable(functions, "selectSong");
+      await selectSong({ orderId, token, selectedSongIndex: songIndex });
+      alert('曲を選択しました！');
+      window.location.reload();
+    } catch (error) {
+      console.error('Selection error:', error);
+      alert('選択に失敗しました: ' + error.message);
+    } finally {
+      setSelectLoading(false);
+    }
+  };
 
   // 支払い処理ハンドラ
   const handlePayment = async () => {
@@ -195,8 +239,12 @@ const OrderConfirmPage = () => {
     switch (status) {
       case 'completed':
         return { text: '完成', color: 'bg-green-100 text-green-800', progress: 100 };
+      case 'video_generating':
+        return { text: '動画生成中', color: 'bg-blue-100 text-blue-800', progress: 95 };
       case 'song_selected':
         return { text: '楽曲選定完了', color: 'bg-blue-100 text-blue-800', progress: 90 };
+      case 'previews_ready':
+        return { text: 'プレビュー完成', color: 'bg-purple-100 text-purple-800', progress: 85 };
       case 'song_generated':
         return { text: '楽曲確認中', color: 'bg-blue-100 text-blue-800', progress: 80 };
       case 'generating_song':
@@ -281,10 +329,51 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
-        {/* Phase1: プレビュー音声セクション */}
-        {order.previewAudioPath && previewSignedUrl && (
+        {/* 2曲選択UI（previews_ready状態時） */}
+        {order.status === "previews_ready" && order.generatedSongs && order.generatedSongs.length > 0 && (
+          <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
+            <h3 className="font-bold text-purple-800 mb-4 text-lg">
+              🎵 2曲からお好みの曲を選んでください
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              どちらの曲がお好みですか？選択した曲で動画を作成します。
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {order.generatedSongs.map((song, index) => (
+                <div
+                  key={index}
+                  className="p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-purple-300 transition-all"
+                >
+                  <p className="font-bold text-gray-700 mb-2">曲 {index + 1}</p>
+                  {previewSignedUrls[index] ? (
+                    <audio
+                      controls
+                      src={previewSignedUrls[index]}
+                      className="w-full mb-3"
+                    />
+                  ) : (
+                    <div className="w-full h-12 bg-gray-100 rounded flex items-center justify-center mb-3">
+                      <span className="text-gray-400 text-sm">読み込み中...</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => handleSelectSong(index)}
+                    disabled={selectLoading || !previewSignedUrls[index]}
+                    className="w-full py-2 rounded-lg font-bold transition-colors bg-purple-500 text-white hover:bg-purple-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  >
+                    {selectLoading ? '処理中...' : 'この曲を選ぶ'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Phase1: プレビュー音声セクション（曲選択後） */}
+        {order.status === "song_selected" && order.previewAudioPath && previewSignedUrl && (
           <div className="mb-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
-            <h3 className="font-bold text-blue-800 mb-4 text-lg">🎵 15秒プレビュー（無料）</h3>
+            <h3 className="font-bold text-blue-800 mb-4 text-lg">🎵 選択した曲（15秒プレビュー）</h3>
             <audio
               ref={previewAudioRef}
               controls
@@ -298,8 +387,20 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
-        {/* 支払いボタン（未払い時のみ表示） */}
-        {!isPaid && order.previewAudioPath && (
+        {/* 動画生成中の表示 */}
+        {order.status === "video_generating" && (
+          <div className="mb-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
+            <h3 className="font-bold text-blue-800 mb-4 text-lg">🎬 動画を生成中...</h3>
+            <div className="flex items-center justify-center py-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mr-3"></div>
+              <span className="text-gray-600">完成までしばらくお待ちください（数分かかります）</span>
+            </div>
+            <p className="text-sm text-gray-500 text-center">完成したらメールでお届けします。</p>
+          </div>
+        )}
+
+        {/* 支払いボタン（曲選択後・未払い時のみ表示） */}
+        {!isPaid && order.status === "song_selected" && (
           <div className="mb-8 p-6 bg-yellow-50 rounded-lg border-2 border-yellow-300">
             <h3 className="font-bold text-yellow-800 mb-4 text-lg">💳 お支払い</h3>
             <p className="text-sm text-gray-700 mb-4">

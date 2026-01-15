@@ -1,5 +1,6 @@
 const {onRequest, onCall} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const sgMail = require("@sendgrid/mail");
 const axios = require("axios");
@@ -702,7 +703,7 @@ exports.getOrderByToken = onRequest({
       plan: order.plan,
       targetName: order.targetName,
       status: order.status,
-      createdAt: order.createdAt,
+      createdAt: order.createdAt ? { seconds: order.createdAt.seconds || order.createdAt._seconds } : null,
       // 完成時のみ曲URLを含める
       selectedSongUrl: order.status === "completed" ? order.selectedSongUrl : null,
       generatedLyrics: order.status === "completed" || order.status === "song_generated" || order.status === "song_selected" ? order.generatedLyrics : null,
@@ -715,6 +716,8 @@ exports.getOrderByToken = onRequest({
       paymentStatus: order.paymentStatus || "unpaid",
       paidAt: order.paidAt || null,
       accessExpiresAt: order.accessExpiresAt || null,
+      // 2曲選択用: previews_ready時にgeneratedSongsを含める
+      generatedSongs: order.status === "previews_ready" ? order.generatedSongs : null,
     };
 
     res.status(200).json({
@@ -1229,13 +1232,12 @@ exports.getAdminFullSignedUrl = onCall({
 /**
  * 支払い処理（顧客ページから呼び出される）
  * - isPaidをtrueに更新
- * - MP4動画をメール送信
+ * - 動画生成ジョブをキューに追加
+ * - 動画生成完了後にMP4メール送信（自動化システムで処理）
  */
 exports.processPayment = onRequest({
   cors: true,
-  memory: "1GiB",
-  timeoutSeconds: 120,
-  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["APP_ENV"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -1272,7 +1274,7 @@ exports.processPayment = onRequest({
     const alreadyPaid = !!order.isPaid;
     const alreadySent = order.deliveryStatus === "sent";
 
-    console.log(`[processPayment] orderId=${orderId}, alreadyPaid=${alreadyPaid}, alreadySent=${alreadySent}, email=${order.userEmail}`);
+    console.log(`[processPayment] orderId=${orderId}, alreadyPaid=${alreadyPaid}, alreadySent=${alreadySent}, status=${order.status}`);
 
     if (alreadyPaid && alreadySent) {
       console.log(`[processPayment] Order ${orderId} already paid and delivered, skipping`);
@@ -1280,152 +1282,58 @@ exports.processPayment = onRequest({
       return;
     }
 
-    // フル動画が存在するか確認
-    if (!order.fullVideoPath) {
-      res.status(400).json({error: "フル動画がまだ生成されていません"});
+    // 曲が選択されているか確認
+    if (order.status !== "song_selected" && order.status !== "video_generating" && order.status !== "completed") {
+      res.status(400).json({error: "曲を選択してから支払いを行ってください"});
       return;
     }
 
-    // 2. isPaid がまだなら更新
+    // 既に動画生成中または完了の場合はスキップ
+    if (order.status === "video_generating") {
+      res.status(200).json({success: true, message: "既に動画生成中です。完成までお待ちください。"});
+      return;
+    }
+
+    if (order.status === "completed" && alreadyPaid) {
+      res.status(200).json({success: true, message: "既に完了しています。"});
+      return;
+    }
+
+    // 2. isPaid を更新
     if (!alreadyPaid) {
       await orderRef.update({
         isPaid: true,
         paidAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       console.log(`[processPayment] Order ${orderId} marked as paid`);
-    } else {
-      console.log(`[processPayment] Order ${orderId} already paid, proceeding to delivery`);
     }
 
-    // 3. フル動画MP4の署名URL取得
-    const bucket = admin.storage().bucket();
-    const fullVideoFile = bucket.file(order.fullVideoPath);
-
-    const [fullVideoUrl] = await fullVideoFile.getSignedUrl({
-      action: "read",
-      expires: Date.now() + 10 * 60 * 1000, // 10分間有効
+    // 3. 動画生成ジョブをキューに追加
+    await admin.firestore().collection("automation_queue").add({
+      orderId,
+      step: "video",
+      status: "pending",
+      retryCount: 0,
+      maxRetries: 3,
+      scheduledAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    console.log(`[processPayment] Generated signed URL for full video`);
-
-    // 4. MP4納品メール送信
-    // 環境変数からフロントエンドURLを取得
-    const appEnv = process.env.APP_ENV || "prod";
-    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=delivery_email&oid=${orderId}`;
-
-    // まずメール本文を取得（管理画面で事前生成されている想定）
-    const emailBody = order.deliveryEmailBody || `
-${order.userEmail} 様
-
-お支払いいただきありがとうございます。
-世界に一つのバースデーソングをお届けします。
-
-添付のMP4ファイルをダウンロードしてご覧ください。
-縦型動画（1080x1920）なのでスマホでの再生に最適です。
-
----
-
-ご感想をお聞かせください（1分で完了します）：
-${feedbackUrl}
-
----
-Songift運営チーム
-    `.trim();
-
-    // SendGrid設定
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) {
-      throw new Error("SENDGRID_API_KEY is not configured");
-    }
-
-    sgMail.setApiKey(sendgridApiKey.trim());
-
-    // MP4ダウンロード
-    const mp4Response = await axios.get(fullVideoUrl, {
-      responseType: "arraybuffer",
-      timeout: 120000,
+    // 4. ステータス更新
+    await orderRef.update({
+      status: "video_generating",
+      automationStatus: "running",
+      currentStep: "video",
     });
 
-    const mp4Buffer = Buffer.from(mp4Response.data);
-    const mp4Base64 = mp4Buffer.toString("base64");
+    console.log(`[processPayment] Video generation job scheduled for order ${orderId}`);
 
-    const fileSizeMB = mp4Buffer.length / (1024 * 1024);
-    console.log(`[processPayment] MP4 size: ${fileSizeMB.toFixed(2)}MB`);
-
-    if (fileSizeMB > 25) {
-      console.warn(`[processPayment] ⚠️ MP4 file size is large: ${fileSizeMB.toFixed(2)}MB`);
-    }
-
-    // 環境に応じてメール送信先を解決
-    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-    const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.userEmail}様`;
-    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
-
-    if (!emailDestination.shouldSkip) {
-      const msg = {
-        to: emailDestination.to,
-        from: {
-          email: "fukui@gadandan.co.jp",
-          name: "Songift",
-        },
-        subject: emailDestination.subject,
-        text: emailBody,
-        html: emailBody.replace(/\n/g, "<br>"),
-        attachments: [
-          {
-            content: mp4Base64,
-            filename: `birthday_song_${order.targetName}.mp4`,
-            type: "video/mp4",
-            disposition: "attachment",
-          },
-        ],
-      };
-
-      await sgMail.send(msg);
-      console.log(`[processPayment] MP4 delivery email sent to ${emailDestination.to}`);
-
-      // 5. Firestoreに送信ステータス記録（メール送信成功時のみ）
-      await orderRef.update({
-        deliveryStatus: "sent",
-        deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      res.status(200).json({
-        success: true,
-        message: "支払い処理が完了し、MP4動画をメールでお送りしました",
-      });
-    } else {
-      // STG環境でメール送信がスキップされた場合
-      console.log(`[processPayment] Email skipped (STG environment without override address)`);
-
-      await orderRef.update({
-        deliveryStatus: "skipped",
-        deliverySkippedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      res.status(200).json({
-        success: true,
-        message: "支払い処理が完了しました（STG環境: メール送信はスキップされました）",
-      });
-    }
+    res.status(200).json({
+      success: true,
+      message: "支払いを受け付けました。動画を生成中です。完成したらメールでお届けします。",
+    });
   } catch (error) {
     console.error("[processPayment] Error:", error);
-
-    // エラー時: deliveryStatus を "error" に更新（再試行可能にする）
-    const {orderId} = req.body;
-    if (orderId) {
-      try {
-        await admin.firestore().collection("orders").doc(orderId).update({
-          deliveryStatus: "error",
-          deliveryError: error.message,
-          deliveryErrorAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        console.log(`[processPayment] Order ${orderId} marked as delivery error`);
-      } catch (updateErr) {
-        console.error("[processPayment] Failed to update delivery error status:", updateErr);
-      }
-    }
 
     res.status(500).json({
       error: "支払い処理に失敗しました",
@@ -2169,5 +2077,973 @@ Songift運営チーム`;
   } catch (error) {
     console.error("[sendFollowupEmails] Error:", error);
   }
+});
+
+// =====================================================
+// 自動化システム - プロンプト生成ロジック
+// =====================================================
+
+/**
+ * 色 → 音楽要素の変換（簡単モード用）
+ */
+const COLOR_TO_MUSIC = {
+  "情熱の赤": {genre: "Rock", bpm: 140, instruments: "electric guitar, drums", key: "G"},
+  "元気な黄色": {genre: "J-pop", bpm: 100, instruments: "piano, acoustic guitar", key: "G"},
+  "優しい青": {genre: "R&B", bpm: 75, instruments: "piano, saxophone", key: "F"},
+  "癒しの緑": {genre: "Jazz", bpm: 90, instruments: "piano, saxophone", key: "F"},
+  "個性的な紫": {genre: "J-pop", bpm: 100, instruments: "synthesizer, electric guitar", key: "C"},
+  "純粋な白": {genre: "J-pop", bpm: 100, instruments: "piano, strings", key: "C"},
+};
+
+/**
+ * 気持ち → ボーカル性別の変換
+ */
+const FEELING_TO_VOCAL = {
+  male: ["元気が出る", "笑える", "刺激的"],
+  female: ["安心する", "幸せ"],
+  default: "female",
+};
+
+/**
+ * 魔法 → タグの変換
+ */
+const SPELL_TO_TAGS = {
+  "キラキラ輝く魔法": "#bright #dreamy",
+  "勇気が湧く魔法": "#powerful #uplifting",
+  "愛に包まれる魔法": "#warm #emotional",
+  "笑顔が溢れる魔法": "#cheerful #fun",
+  "希望の魔法": "#hopeful #inspiring",
+};
+
+/**
+ * ジャンル → BPMの変換（プロモード用）
+ */
+const GENRE_TO_BPM = {
+  "J-pop（明るいポップス）": {genre: "J-pop", bpm: 100},
+  "R&B（おしゃれでスムーズ）": {genre: "R&B", bpm: 75},
+  "Rock（パワフルで熱い）": {genre: "Rock", bpm: 140},
+  "Jazz（大人っぽく洗練）": {genre: "Jazz", bpm: 90},
+  "Acoustic（温かみのある生音）": {genre: "Acoustic", bpm: 90},
+  "EDM（ノリノリでダンサブル）": {genre: "EDM", bpm: 128},
+  "Bossa Nova（リラックスした雰囲気）": {genre: "Bossa Nova", bpm: 80},
+};
+
+/**
+ * 簡単モード用のGeminiプロンプトを生成
+ */
+function buildSimpleModePrompt(order) {
+  const targetFeeling = Array.isArray(order.targetFeeling)
+    ? order.targetFeeling.join(", ")
+    : order.targetFeeling;
+
+  const colorMappingText = Object.entries(COLOR_TO_MUSIC)
+    .map(([color, music]) => `- ${color} → ${music.genre}, ${music.bpm} bpm, ${music.instruments} / Key: ${music.key}`)
+    .join("\n        ");
+
+  const feelingMappingText = `
+        - 「${FEELING_TO_VOCAL.male.join("」「")}」が含まれる → male
+        - 「${FEELING_TO_VOCAL.female.join("」「")}」が含まれる → female
+        - その他・複数選択 → ${FEELING_TO_VOCAL.default}`;
+
+  const spellMappingText = Object.entries(SPELL_TO_TAGS)
+    .map(([spell, tags]) => `- ${spell} → ${tags}`)
+    .join("\n        ");
+
+  return `
+あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
+以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
+
+【フォーム回答】
+Q1. お誕生日の主役のお名前：${order.targetName}
+Q2. その人を色で表すと：${order.targetColor}
+Q3. その人といると、どんな気持ち：${targetFeeling}
+Q4. 魔法の言葉を一つ贈るなら：${order.magicWord}
+Q5. その人の新しい一年に、どんな魔法をかけたい：${order.magicSpell}
+
+【歌詞創作ルール（重要）】
+Q4とQ5の選択肢をそのまま使わず、その「意味・感情・メッセージ」を理解して、自然で詩的な日本語の歌詞に創作してください。毎回異なる表現にしてください。
+
+■ Verse（25〜30文字程度）
+Q4のメッセージの本質的な意味を、歌いやすく自然な日本語で表現してください。
+
+■ Pre-Chorus（25〜30文字程度）
+Q5の魔法に対応する、前向きで温かいオリジナルフレーズにしてください。
+
+【変換ルール】
+■ Q2（色）→ ジャンル・BPM・楽器・キーの変換
+        ${colorMappingText}
+
+■ Q3（気持ち）→ ボーカル性別の決定${feelingMappingText}
+
+■ Q5（魔法）→ 追加タグ
+        ${spellMappingText}
+
+【出力フォーマット (JSON)】
+必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
+{
+  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "sunoPrompt": "happy birthday | (Q2から変換したジャンル) | (Q2から変換したBPM) | key: (Q2から変換したKey) | (Q2から変換した楽器), clap | Japanese (Q3から決定したvocal) vocal | #birthday #upbeat #groovy (Q5から変換した追加タグ)"
+}
+  `.trim();
+}
+
+/**
+ * プロモード用のGeminiプロンプトを生成
+ */
+function buildProModePrompt(order) {
+  const instruments = Array.isArray(order.proInstruments)
+    ? order.proInstruments.join(", ")
+    : order.proInstruments;
+
+  const genreMappingText = Object.entries(GENRE_TO_BPM)
+    .map(([label, data]) => `- ${label} → ジャンル：${data.genre} / BPM：${data.bpm} bpm`)
+    .join("\n        ");
+
+  return `
+あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
+以下のフォーム回答を元に、定義されたルールに従って「歌詞」と「Suno AI用プロンプト」を作成してください。
+
+【フォーム回答】
+質問1（ジャンル）：${order.proGenre}
+質問2（楽器）：${instruments}
+質問3（性別）：${order.proGender}
+質問4（名前）：${order.targetName}
+質問5-1（メッセージ1）：${order.proMessage1}
+質問5-2（メッセージ2）：${order.proMessage2}
+
+【抽出・変換ルール】
+■ 質問1（ジャンル）→ ジャンル名とBPMを抽出
+        ${genreMappingText}
+
+■ 質問2（楽器）→ 楽器名とキーを抽出
+
+【キー決定ルール（優先順位）】
+1. 「その他」が選択されている → Key: C（統一）
+2. Guitar, Ukulele, Keyboard が含まれる → Key: G
+3. Saxophone, Piano が含まれる → Key: F
+4. Synthesizer のみ → Key: C
+5. 上記該当なし → Key: C（デフォルト）
+
+■ 質問3（性別）→ 英語部分を小文字で抽出
+- 男性（Male）→ male
+- 女性（Female）→ female
+
+■ 質問4（名前）→ そのまま使用
+
+■ 質問5-1、5-2（メッセージ）の変換ルール
+- 歌詞部分：漢字をひらがなに変換
+
+【出力フォーマット (JSON)】
+必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
+{
+  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(質問5-1の回答をひらがな変換したもの)\\n[Pre-Chorus]\\n(質問5-2の回答をひらがな変換したもの)\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "sunoPrompt": "happy birthday | (質問1から抽出したジャンル名) | (質問1から抽出したBPM) | key: (質問2から決定したKey) | (質問2から抽出した楽器名小文字), clap | Japanese (質問3から抽出したvocal小文字) vocal | #birthday #upbeat #groovy"
+}
+  `.trim();
+}
+
+// =====================================================
+// 自動化システム - ヘルパー関数
+// =====================================================
+
+/**
+ * 次のステップをキューに追加
+ */
+async function scheduleNextStep(orderId, step, delayMinutes = 0) {
+  const scheduledAt = delayMinutes > 0
+    ? new Date(Date.now() + delayMinutes * 60 * 1000)
+    : new Date();
+
+  await admin.firestore().collection("automation_queue").add({
+    orderId,
+    step,
+    status: "pending",
+    retryCount: 0,
+    maxRetries: 3,
+    scheduledAt: admin.firestore.Timestamp.fromDate(scheduledAt),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  console.log(`[scheduleNextStep] Scheduled ${step} for order ${orderId} at ${scheduledAt.toISOString()}`);
+}
+
+/**
+ * 自動化エラー時のSlack通知
+ */
+async function notifyAutomationError(orderId, step, error, slackWebhookUrl) {
+  if (!slackWebhookUrl) return;
+
+  try {
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+    const order = orderDoc.data();
+
+    const message = {
+      text: `🚨 *自動処理エラー*\n\n` +
+            `*注文ID:* ${orderId}\n` +
+            `*お名前:* ${order?.targetName || "不明"}\n` +
+            `*ステップ:* ${step}\n` +
+            `*エラー:* ${error.message}\n` +
+            `*リトライ回数:* 3/3（上限到達）\n\n` +
+            `管理画面で確認してください。`,
+    };
+
+    await axios.post(slackWebhookUrl, message);
+    console.log(`[notifyAutomationError] Slack notification sent for order ${orderId}`);
+  } catch (slackError) {
+    console.error("[notifyAutomationError] Slack notification failed:", slackError);
+  }
+}
+
+/**
+ * リトライ処理（指数バックオフ）
+ */
+async function handleJobError(jobRef, jobData, error, slackWebhookUrl) {
+  const newRetryCount = jobData.retryCount + 1;
+
+  if (newRetryCount >= jobData.maxRetries) {
+    // 上限到達
+    await jobRef.update({
+      status: "failed",
+      errorMessage: error.message,
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await admin.firestore().collection("orders").doc(jobData.orderId).update({
+      automationStatus: "failed",
+      lastError: error.message,
+      failedStep: jobData.step,
+      retryCount: newRetryCount,
+    });
+
+    await notifyAutomationError(jobData.orderId, jobData.step, error, slackWebhookUrl);
+  } else {
+    // リトライ（指数バックオフ: 2, 4, 8分）
+    const delayMinutes = Math.pow(2, newRetryCount);
+    const nextSchedule = new Date(Date.now() + delayMinutes * 60 * 1000);
+
+    await jobRef.update({
+      status: "pending",
+      retryCount: newRetryCount,
+      scheduledAt: admin.firestore.Timestamp.fromDate(nextSchedule),
+      lastError: error.message,
+    });
+
+    await admin.firestore().collection("orders").doc(jobData.orderId).update({
+      retryCount: newRetryCount,
+      lastRetryAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastError: error.message,
+    });
+
+    console.log(`[handleJobError] Scheduled retry ${newRetryCount} for order ${jobData.orderId} at ${nextSchedule.toISOString()}`);
+  }
+}
+
+// =====================================================
+// 自動化システム - Firestore Trigger
+// =====================================================
+
+/**
+ * 注文作成時に自動パイプラインを開始
+ */
+exports.onOrderCreated = onDocumentCreated({
+  document: "orders/{orderId}",
+  secrets: [],
+}, async (event) => {
+  const orderId = event.params.orderId;
+  const order = event.data.data();
+
+  console.log(`[onOrderCreated] New order created: ${orderId}`);
+
+  // automation_queueにプロンプト生成ジョブを追加
+  await scheduleNextStep(orderId, "prompt");
+
+  // orderのステータス更新
+  await event.data.ref.update({
+    automationStatus: "running",
+    currentStep: "prompt",
+  });
+
+  console.log(`[onOrderCreated] Automation started for order ${orderId}`);
+});
+
+// =====================================================
+// 自動化システム - スケジューラー
+// =====================================================
+
+/**
+ * 自動化キュー処理（1分ごと）
+ */
+exports.processAutomationQueue = onSchedule({
+  schedule: "every 1 minutes",
+  timeZone: "Asia/Tokyo",
+  secrets: ["GEMINI_API_KEY", "SUNO_API_KEY", "VIDEO_GENERATOR_URL", "SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+}, async (event) => {
+  const db = admin.firestore();
+  const now = admin.firestore.Timestamp.now();
+
+  // pending状態でscheduledAtが現在以前のジョブを取得（最大5件）
+  const jobsSnapshot = await db.collection("automation_queue")
+    .where("status", "==", "pending")
+    .where("scheduledAt", "<=", now)
+    .orderBy("scheduledAt")
+    .limit(5)
+    .get();
+
+  if (jobsSnapshot.empty) {
+    return;
+  }
+
+  console.log(`[processAutomationQueue] Processing ${jobsSnapshot.size} jobs`);
+
+  for (const jobDoc of jobsSnapshot.docs) {
+    const jobData = jobDoc.data();
+    const orderId = jobData.orderId;
+
+    // 処理中にマーク
+    await jobDoc.ref.update({
+      status: "processing",
+      startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    try {
+      const orderRef = db.collection("orders").doc(orderId);
+      const orderDoc = await orderRef.get();
+
+      if (!orderDoc.exists) {
+        throw new Error("Order not found");
+      }
+
+      const order = orderDoc.data();
+
+      switch (jobData.step) {
+        case "prompt":
+          await processPromptStep(orderRef, order, orderId);
+          break;
+        case "song":
+          await processSongStep(orderRef, order, orderId);
+          break;
+        case "preview":
+          await processPreviewStep(orderRef, order, orderId);
+          break;
+        case "email":
+          await processEmailStep(orderRef, order, orderId);
+          break;
+        case "video":
+          await processVideoStep(orderRef, order, orderId);
+          break;
+        default:
+          throw new Error(`Unknown step: ${jobData.step}`);
+      }
+
+      await jobDoc.ref.update({
+        status: "completed",
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      console.error(`[processAutomationQueue] Error processing job ${jobDoc.id}:`, error);
+      await handleJobError(jobDoc.ref, jobData, error, process.env.SLACK_WEBHOOK_URL);
+    }
+  }
+});
+
+/**
+ * プロンプト生成ステップ
+ */
+async function processPromptStep(orderRef, order, orderId) {
+  console.log(`[processPromptStep] Processing order ${orderId}`);
+
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+
+  // プロンプト生成
+  const systemPrompt = order.plan === "pro"
+    ? buildProModePrompt(order)
+    : buildSimpleModePrompt(order);
+
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
+    {contents: [{parts: [{text: systemPrompt}]}]},
+    {headers: {"Content-Type": "application/json"}, timeout: 60000}
+  );
+
+  const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!generatedText) {
+    throw new Error("Gemini returned empty response");
+  }
+
+  // JSONパース
+  const cleanJsonText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
+  const parsedResult = JSON.parse(cleanJsonText);
+
+  // Firestore更新
+  await orderRef.update({
+    generatedLyrics: parsedResult.lyrics,
+    generatedPrompt: parsedResult.sunoPrompt,
+    promptGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+    status: "processing",
+    currentStep: "song",
+  });
+
+  // 次のステップをキューに追加
+  await scheduleNextStep(orderId, "song");
+
+  console.log(`[processPromptStep] Completed for order ${orderId}`);
+}
+
+/**
+ * Suno楽曲生成ステップ
+ */
+async function processSongStep(orderRef, order, orderId) {
+  console.log(`[processSongStep] Processing order ${orderId}`);
+
+  const sunoApiKey = process.env.SUNO_API_KEY;
+  if (!sunoApiKey) {
+    throw new Error("SUNO_API_KEY is not configured");
+  }
+
+  if (!order.generatedLyrics || !order.generatedPrompt) {
+    throw new Error("Lyrics or prompt not generated yet");
+  }
+
+  // callbackUrl設定
+  const appEnv = process.env.APP_ENV || "prod";
+  const callbackBaseUrl = appEnv === "prod"
+    ? "https://birthday-song-app.firebaseapp.com"
+    : "https://birthday-song-app-stg.firebaseapp.com";
+
+  const response = await axios.post(
+    "https://api.sunoapi.org/api/v1/generate",
+    {
+      customMode: true,
+      prompt: order.generatedLyrics,
+      style: order.generatedPrompt,
+      title: "Happy Birthday",
+      instrumental: false,
+      model: "V5",
+      callBackUrl: `${callbackBaseUrl}/api/callback`,
+    },
+    {
+      headers: {
+        "Authorization": `Bearer ${sunoApiKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 60000,
+    }
+  );
+
+  if (response.data.code !== 200 || !response.data.data?.taskId) {
+    throw new Error(`Suno API error: ${response.data.msg || "Unknown error"}`);
+  }
+
+  const taskId = response.data.data.taskId;
+
+  await orderRef.update({
+    status: "generating_song",
+    sunoTaskId: taskId,
+    songGenerationStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+    sunoStatus: "PENDING",
+    sunoErrorCode: null,
+    sunoErrorMessage: null,
+    currentStep: "song",
+  });
+
+  console.log(`[processSongStep] Started Suno generation for order ${orderId}, taskId: ${taskId}`);
+  // Sunoの完了はcheckSunoStatusScheduledでポーリング
+}
+
+/**
+ * プレビュー生成ステップ（2曲分）
+ */
+async function processPreviewStep(orderRef, order, orderId) {
+  console.log(`[processPreviewStep] Processing order ${orderId}`);
+
+  const videoGeneratorUrl = process.env.VIDEO_GENERATOR_URL;
+  if (!videoGeneratorUrl) {
+    throw new Error("VIDEO_GENERATOR_URL is not configured");
+  }
+
+  if (!order.generatedSongs || order.generatedSongs.length === 0) {
+    throw new Error("No songs generated yet");
+  }
+
+  // 認証トークン取得
+  const auth = new GoogleAuth();
+  const client = await auth.getIdTokenClient(videoGeneratorUrl);
+
+  // 2曲分のプレビュー生成
+  const response = await client.request({
+    url: `${videoGeneratorUrl}/generate-previews`,
+    method: "POST",
+    data: {
+      songs: order.generatedSongs,
+      orderId: orderId,
+    },
+    timeout: 300000,
+  });
+
+  if (!response.data.success) {
+    throw new Error("Preview generation failed");
+  }
+
+  // generatedSongsを更新（previewAudioPath追加）
+  const updatedSongs = response.data.results;
+
+  await orderRef.update({
+    generatedSongs: updatedSongs,
+    status: "previews_ready",
+    currentStep: "email",
+    previewsGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  // 次のステップをキューに追加
+  await scheduleNextStep(orderId, "email");
+
+  console.log(`[processPreviewStep] Completed for order ${orderId}`);
+}
+
+/**
+ * プレビュー完成メール送信ステップ
+ */
+async function processEmailStep(orderRef, order, orderId) {
+  console.log(`[processEmailStep] Processing order ${orderId}`);
+
+  const sendgridApiKey = process.env.SENDGRID_API_KEY;
+  if (!sendgridApiKey) {
+    throw new Error("SENDGRID_API_KEY is not configured");
+  }
+
+  sgMail.setApiKey(sendgridApiKey.trim());
+
+  const appEnv = process.env.APP_ENV || "prod";
+  const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+  const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+  const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
+
+  const planName = order.plan === "simple" ? "魔法診断（簡単モード）" : "プロモード";
+
+  const emailBody = `${order.userEmail} 様
+
+この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
+
+${order.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました！
+
+🎵 2曲のプレビューが完成しました！
+以下のURLからプレビューをご確認いただき、お好みの曲をお選びください：
+${previewUrl}
+
+気に入った曲を選択後、ページ内の支払いボタンから¥500をお支払いください。
+お支払い確認後、選択された曲でフル動画（MP4）を作成し、メールでお届けします。
+
+---
+Songift運営チーム`;
+
+  const originalSubject = `【Songift】プレビュー完成！曲を選んでください - ${order.userEmail}様`;
+  const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
+
+  if (!emailDestination.shouldSkip) {
+    const msg = {
+      to: emailDestination.to,
+      from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+      subject: emailDestination.subject,
+      text: emailBody,
+      html: emailBody.replace(/\n/g, "<br>"),
+    };
+
+    await sgMail.send(msg);
+    console.log(`[processEmailStep] Preview email sent to ${emailDestination.to}`);
+  } else {
+    console.log(`[processEmailStep] Email skipped (STG environment)`);
+  }
+
+  await orderRef.update({
+    previewEmailStatus: "sent",
+    previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+    automationStatus: "completed",
+    currentStep: null,
+  });
+
+  console.log(`[processEmailStep] Completed for order ${orderId}`);
+}
+
+/**
+ * 動画生成ステップ（支払い後）
+ */
+async function processVideoStep(orderRef, order, orderId) {
+  console.log(`[processVideoStep] Processing order ${orderId}`);
+
+  const videoGeneratorUrl = process.env.VIDEO_GENERATOR_URL;
+  if (!videoGeneratorUrl) {
+    throw new Error("VIDEO_GENERATOR_URL is not configured");
+  }
+
+  if (!order.selectedSongUrl) {
+    throw new Error("No song selected yet");
+  }
+
+  // 認証トークン取得
+  const auth = new GoogleAuth();
+  const client = await auth.getIdTokenClient(videoGeneratorUrl);
+
+  const bucket = admin.storage().bucket();
+  const sourceAudioPath = `audios/${orderId}/source.mp3`;
+  const fullVideoPath = `videos/${orderId}/full.mp4`;
+
+  // 1. 選択された曲をStorageに保存
+  const audioResponse = await axios.get(order.selectedSongUrl, {
+    responseType: "arraybuffer",
+    timeout: 120000,
+  });
+
+  await bucket.file(sourceAudioPath).save(Buffer.from(audioResponse.data), {
+    metadata: {contentType: "audio/mpeg"},
+  });
+
+  // 2. フル動画生成
+  const videoResponse = await client.request({
+    url: `${videoGeneratorUrl}/generate-full-video`,
+    method: "POST",
+    data: {
+      sourceAudioPath: sourceAudioPath,
+      outputPath: fullVideoPath,
+      backgroundTemplateId: order.backgroundTemplateId || "t1",
+      lyricsText: order.generatedLyrics || "",
+      sunoTaskId: order.sunoTaskId || null,
+      selectedSongUrl: order.selectedSongUrl || null,
+    },
+    timeout: 480000,
+  });
+
+  if (!videoResponse.data.success) {
+    throw new Error("Video generation failed");
+  }
+
+  await orderRef.update({
+    sourceAudioPath: sourceAudioPath,
+    fullVideoPath: fullVideoPath,
+    fullVideoAudioDurationSec: videoResponse.data.audioDurationSeconds,
+    fullVideoDurationSec: videoResponse.data.videoDurationSeconds,
+    subtitleMode: videoResponse.data.subtitleMode,
+    videoGenerationStatus: "completed",
+    status: "completed",
+    currentStep: null,
+  });
+
+  // 3. MP4納品メール送信
+  await sendDeliveryEmail(orderRef, order, orderId, fullVideoPath);
+
+  console.log(`[processVideoStep] Completed for order ${orderId}`);
+}
+
+/**
+ * MP4納品メール送信
+ */
+async function sendDeliveryEmail(orderRef, order, orderId, fullVideoPath) {
+  const sendgridApiKey = process.env.SENDGRID_API_KEY;
+  if (!sendgridApiKey) {
+    throw new Error("SENDGRID_API_KEY is not configured");
+  }
+
+  sgMail.setApiKey(sendgridApiKey.trim());
+
+  const appEnv = process.env.APP_ENV || "prod";
+  const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+  const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+  const feedbackUrl = `${frontendBaseUrl}/feedback?ch=delivery_email&oid=${orderId}`;
+
+  // フル動画の署名URL取得
+  const bucket = admin.storage().bucket();
+  const [fullVideoUrl] = await bucket.file(fullVideoPath).getSignedUrl({
+    action: "read",
+    expires: Date.now() + 10 * 60 * 1000,
+  });
+
+  // MP4ダウンロード
+  const mp4Response = await axios.get(fullVideoUrl, {
+    responseType: "arraybuffer",
+    timeout: 120000,
+  });
+
+  const mp4Buffer = Buffer.from(mp4Response.data);
+  const mp4Base64 = mp4Buffer.toString("base64");
+
+  const emailBody = `${order.userEmail} 様
+
+お支払いいただきありがとうございます。
+世界に一つのバースデーソングをお届けします。
+
+添付のMP4ファイルをダウンロードしてご覧ください。
+縦型動画（1080x1920）なのでスマホでの再生に最適です。
+
+---
+
+ご感想をお聞かせください（1分で完了します）：
+${feedbackUrl}
+
+---
+Songift運営チーム`;
+
+  const originalSubject = `【Songift】世界に一つのバースデーソングをお届けします - ${order.userEmail}様`;
+  const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
+
+  if (!emailDestination.shouldSkip) {
+    const msg = {
+      to: emailDestination.to,
+      from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+      subject: emailDestination.subject,
+      text: emailBody,
+      html: emailBody.replace(/\n/g, "<br>"),
+      attachments: [{
+        content: mp4Base64,
+        filename: `birthday_song_${order.targetName}.mp4`,
+        type: "video/mp4",
+        disposition: "attachment",
+      }],
+    };
+
+    await sgMail.send(msg);
+    console.log(`[sendDeliveryEmail] MP4 delivery email sent to ${emailDestination.to}`);
+  }
+
+  await orderRef.update({
+    deliveryStatus: "sent",
+    deliverySentAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/**
+ * Sunoステータス確認（1分ごと）
+ */
+exports.checkSunoStatusScheduled = onSchedule({
+  schedule: "every 1 minutes",
+  timeZone: "Asia/Tokyo",
+  secrets: ["SUNO_API_KEY"],
+}, async (event) => {
+  const db = admin.firestore();
+  const sunoApiKey = process.env.SUNO_API_KEY;
+
+  if (!sunoApiKey) {
+    console.error("[checkSunoStatusScheduled] SUNO_API_KEY not configured");
+    return;
+  }
+
+  // generating_song状態のオーダーを取得
+  const ordersSnapshot = await db.collection("orders")
+    .where("status", "==", "generating_song")
+    .get();
+
+  if (ordersSnapshot.empty) {
+    return;
+  }
+
+  console.log(`[checkSunoStatusScheduled] Checking ${ordersSnapshot.size} orders`);
+
+  for (const orderDoc of ordersSnapshot.docs) {
+    const order = orderDoc.data();
+    const orderId = orderDoc.id;
+
+    try {
+      // タイムアウトチェック（4分）
+      if (order.songGenerationStartedAt) {
+        const startedAt = order.songGenerationStartedAt.toDate();
+        const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000;
+
+        if (elapsedSeconds > 240) {
+          await orderDoc.ref.update({
+            status: "song_timeout",
+            sunoStatus: "TIMEOUT",
+            sunoErrorMessage: "Timed out waiting for Suno (4 minutes)",
+            automationStatus: "failed",
+            lastError: "Song generation timeout",
+          });
+
+          // Slack通知
+          const slackUrl = process.env.SLACK_WEBHOOK_URL;
+          if (slackUrl) {
+            await notifyAutomationError(orderId, "song", new Error("Song generation timeout"), slackUrl);
+          }
+          continue;
+        }
+      }
+
+      // Sunoステータス確認
+      const response = await axios.get(
+        `https://api.sunoapi.org/api/v1/generate/record-info?taskId=${order.sunoTaskId}`,
+        {
+          headers: {
+            "Authorization": `Bearer ${sunoApiKey}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30000,
+        }
+      );
+
+      const dataStatus = response.data?.data?.status;
+      const errorCode = response.data?.data?.errorCode;
+      const errorMessage = response.data?.data?.errorMessage;
+
+      // 失敗判定
+      if (
+        dataStatus === "GENERATE_AUDIO_FAILED" ||
+        dataStatus?.includes("FAILED") ||
+        dataStatus?.includes("ERROR") ||
+        errorCode != null ||
+        errorMessage != null
+      ) {
+        await orderDoc.ref.update({
+          status: "song_failed",
+          sunoStatus: dataStatus || "FAILED",
+          sunoErrorCode: errorCode,
+          sunoErrorMessage: errorMessage || "Generation failed",
+          automationStatus: "failed",
+          lastError: errorMessage || "Song generation failed",
+        });
+
+        const slackUrl = process.env.SLACK_WEBHOOK_URL;
+        if (slackUrl) {
+          await notifyAutomationError(orderId, "song", new Error(errorMessage || "Song generation failed"), slackUrl);
+        }
+        continue;
+      }
+
+      // 成功判定
+      if (response.data.code === 200 && dataStatus === "SUCCESS") {
+        const sunoData = response.data.data.response?.sunoData || [];
+
+        if (sunoData.length > 0) {
+          const songs = sunoData.map((song) => ({
+            id: song.id,
+            audio_url: song.audioUrl || song.audio_url,
+            stream_audio_url: song.streamAudioUrl,
+            title: song.title,
+            duration: song.duration,
+          }));
+
+          await orderDoc.ref.update({
+            status: "song_generated",
+            sunoStatus: "SUCCESS",
+            generatedSongs: songs,
+          });
+
+          // プレビュー生成ステップをキューに追加
+          await scheduleNextStep(orderId, "preview");
+
+          console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId}`);
+        }
+      }
+    } catch (error) {
+      console.error(`[checkSunoStatusScheduled] Error checking order ${orderId}:`, error);
+    }
+  }
+});
+
+// =====================================================
+// 自動化システム - 顧客向けAPI
+// =====================================================
+
+/**
+ * 顧客が2曲から1曲を選択
+ */
+exports.selectSong = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId, token, selectedSongIndex} = request.data;
+
+  if (!orderId || !token || selectedSongIndex === undefined) {
+    throw new Error("必須パラメータが不足しています");
+  }
+
+  const db = admin.firestore();
+  const orderRef = db.collection("orders").doc(orderId);
+  const orderDoc = await orderRef.get();
+
+  if (!orderDoc.exists) {
+    throw new Error("注文が見つかりません");
+  }
+
+  const order = orderDoc.data();
+
+  // トークン検証
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+  if (tokenHash !== order.tokenHash) {
+    throw new Error("無効なトークンです");
+  }
+
+  // 有効期限チェック
+  if (order.tokenExpiresAt && order.tokenExpiresAt.toDate() < new Date()) {
+    throw new Error("トークンの有効期限が切れています");
+  }
+
+  // 選択可能な状態か確認
+  if (order.status !== "previews_ready") {
+    throw new Error("選択できる状態ではありません");
+  }
+
+  if (!order.generatedSongs || selectedSongIndex < 0 || selectedSongIndex >= order.generatedSongs.length) {
+    throw new Error("無効な選択です");
+  }
+
+  const selectedSong = order.generatedSongs[selectedSongIndex];
+
+  await orderRef.update({
+    selectedSongIndex: selectedSongIndex,
+    selectedSongUrl: selectedSong.audio_url,
+    selectedAt: admin.firestore.FieldValue.serverTimestamp(),
+    status: "song_selected",
+    previewAudioPath: selectedSong.previewAudioPath,
+  });
+
+  console.log(`[selectSong] Song ${selectedSongIndex} selected for order ${orderId}`);
+
+  return {success: true, message: "曲を選択しました"};
+});
+
+/**
+ * 曲インデックス指定でプレビュー署名URL取得
+ */
+exports.getPreviewSignedUrlBySongIndex = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId, token, songIndex} = request.data;
+
+  if (!orderId || !token || songIndex === undefined) {
+    throw new Error("必須パラメータが不足しています");
+  }
+
+  const db = admin.firestore();
+  const orderDoc = await db.collection("orders").doc(orderId).get();
+
+  if (!orderDoc.exists) {
+    throw new Error("注文が見つかりません");
+  }
+
+  const order = orderDoc.data();
+
+  // トークン検証
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+  if (tokenHash !== order.tokenHash) {
+    throw new Error("無効なトークンです");
+  }
+
+  if (!order.generatedSongs || songIndex < 0 || songIndex >= order.generatedSongs.length) {
+    throw new Error("無効なインデックスです");
+  }
+
+  const song = order.generatedSongs[songIndex];
+
+  if (!song.previewAudioPath) {
+    throw new Error("プレビューがまだ生成されていません");
+  }
+
+  const bucket = admin.storage().bucket();
+  const [signedUrl] = await bucket.file(song.previewAudioPath).getSignedUrl({
+    version: "v4",
+    action: "read",
+    expires: Date.now() + 20 * 60 * 1000, // 20分
+  });
+
+  return {signedUrl};
 });
 

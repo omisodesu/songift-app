@@ -917,123 +917,115 @@ const AdminPage = ({ user }) => {
                 </div>
               </div>
 
+              {/* 自動化ステータス表示 */}
+              <div className="bg-gray-50 p-4 rounded border mb-4">
+                <h4 className="font-bold text-gray-700 mb-2">🤖 自動処理状況</h4>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                    order.automationStatus === 'running' ? 'bg-blue-100 text-blue-800 animate-pulse' :
+                    order.automationStatus === 'completed' ? 'bg-green-100 text-green-800' :
+                    order.automationStatus === 'failed' ? 'bg-red-100 text-red-800' :
+                    order.automationStatus === 'paused' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-gray-100 text-gray-800'
+                  }`}>
+                    {order.automationStatus === 'running' ? '処理中' :
+                     order.automationStatus === 'completed' ? '完了' :
+                     order.automationStatus === 'failed' ? 'エラー' :
+                     order.automationStatus === 'paused' ? '一時停止' : '待機中'}
+                  </span>
+                  {order.currentStep && (
+                    <span className="text-sm text-gray-600">
+                      現在: {order.currentStep === 'prompt' ? 'プロンプト生成' :
+                             order.currentStep === 'song' ? '楽曲生成' :
+                             order.currentStep === 'preview' ? 'プレビュー生成' :
+                             order.currentStep === 'email' ? 'メール送信' :
+                             order.currentStep === 'video' ? '動画生成' : order.currentStep}
+                    </span>
+                  )}
+                </div>
+                {order.lastError && (
+                  <div className="bg-red-50 p-3 rounded text-sm text-red-700 mb-2">
+                    <p className="font-bold">エラー:</p>
+                    <p className="text-xs">{order.lastError}</p>
+                    {order.retryCount > 0 && (
+                      <p className="text-xs mt-1">リトライ: {order.retryCount}/3</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-gray-50 p-4 rounded border">
-                  <h4 className="font-bold text-gray-700 mb-2">1. Geminiプロンプト</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">1. プロンプト（自動生成）</h4>
                   {order.generatedLyrics ? (
                     <div className="text-xs">
                       <p className="font-bold mb-1">歌詞:</p>
                       <textarea
-                        readOnly={editingOrderId !== order.id}
-                        className={`w-full h-40 border mb-2 p-2 text-sm ${editingOrderId === order.id ? 'bg-white' : 'bg-gray-100'}`}
-                        value={editingOrderId === order.id ? editedLyrics : order.generatedLyrics}
-                        onChange={(e) => setEditedLyrics(e.target.value)}
+                        readOnly
+                        className="w-full h-40 border mb-2 p-2 text-sm bg-gray-100"
+                        value={order.generatedLyrics}
                       />
                       <p className="font-bold mb-1">スタイル:</p>
                       <textarea
-                        readOnly={editingOrderId !== order.id}
-                        className={`w-full h-24 border mb-2 p-2 text-sm ${editingOrderId === order.id ? 'bg-white' : 'bg-gray-100'}`}
-                        value={editingOrderId === order.id ? editedPrompt : order.generatedPrompt}
-                        onChange={(e) => setEditedPrompt(e.target.value)}
+                        readOnly
+                        className="w-full h-24 border mb-2 p-2 text-sm bg-gray-100"
+                        value={order.generatedPrompt}
                       />
-                      {editingOrderId === order.id ? (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleEditSave(order.id)}
-                            className="flex-1 bg-green-600 text-white py-2 rounded shadow hover:bg-green-700"
-                          >
-                            保存
-                          </button>
-                          <button
-                            onClick={handleEditCancel}
-                            className="flex-1 bg-gray-500 text-white py-2 rounded shadow hover:bg-gray-600"
-                          >
-                            キャンセル
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleEditStart(order)}
-                          className="w-full bg-blue-600 text-white py-2 rounded shadow hover:bg-blue-700"
-                        >
-                          編集
-                        </button>
-                      )}
+                      <p className="text-green-600 text-xs">✅ 自動生成済み</p>
                     </div>
                   ) : (
-                    <button onClick={() => handleGeneratePrompt(order)} className="bg-purple-600 text-white w-full py-2 rounded shadow hover:bg-purple-700">
-                      Gemini生成 ✨
-                    </button>
+                    <div className="text-center py-4 text-gray-500 text-sm">
+                      {order.automationStatus === 'running' && order.currentStep === 'prompt' ? (
+                        <span className="text-blue-600 animate-pulse">生成中...</span>
+                      ) : (
+                        <span>待機中</span>
+                      )}
+                    </div>
                   )}
                 </div>
 
                 <div className="bg-gray-50 p-4 rounded border">
-                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲生成 & 選定</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲（自動生成）</h4>
 
                   {/* 生成中 */}
                   {order.status === 'generating_song' ? (
                     <div className="text-center py-4 text-orange-600 font-bold animate-pulse">
                       生成中... 自動更新されます
                     </div>
-                  ) : order.status === 'song_failed' ? (
-                    /* 生成失敗 */
+                  ) : order.status === 'song_failed' || order.status === 'song_timeout' ? (
                     <div className="bg-red-50 border border-red-300 p-3 rounded mb-2">
-                      <p className="text-red-700 font-bold mb-1">⚠️ 生成失敗</p>
+                      <p className="text-red-700 font-bold mb-1">
+                        {order.status === 'song_timeout' ? '⏱️ タイムアウト' : '⚠️ 生成失敗'}
+                      </p>
                       <p className="text-xs text-red-600 mb-2">
-                        {order.sunoErrorMessage || 'Suno API returned an error'}
+                        {order.sunoErrorMessage || (order.status === 'song_timeout' ? '生成に4分以上かかりました' : 'エラーが発生しました')}
                       </p>
-                      {order.sunoErrorCode && (
-                        <p className="text-xs text-gray-600">Error Code: {order.sunoErrorCode}</p>
-                      )}
-                      <button
-                        onClick={() => handleGenerateSong(order)}
-                        className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 mt-2"
-                      >
-                        再生成 🔄
-                      </button>
+                      <p className="text-xs text-gray-600">自動リトライ待ち、または管理者対応が必要です</p>
                     </div>
-                  ) : order.status === 'song_timeout' ? (
-                    /* タイムアウト */
-                    <div className="bg-yellow-50 border border-yellow-300 p-3 rounded mb-2">
-                      <p className="text-yellow-700 font-bold mb-1">⏱️ タイムアウト</p>
-                      <p className="text-xs text-yellow-600 mb-2">
-                        生成に4分以上かかりました。再度お試しください。
-                      </p>
-                      <button
-                        onClick={() => handleGenerateSong(order)}
-                        className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 mt-2"
-                      >
-                        再生成 🔄
-                      </button>
-                    </div>
+                  ) : order.status === 'previews_ready' || order.status === 'song_selected' ? (
+                    <div className="text-green-600 text-sm mb-2">✅ 楽曲生成完了・顧客選択待ち</div>
                   ) : (
-                    /* 通常の生成ボタン */
-                    <button
-                      onClick={() => handleGenerateSong(order)}
-                      disabled={!order.generatedPrompt || order.status === 'generating_song'}
-                      className="bg-orange-500 text-white w-full py-2 rounded shadow hover:bg-orange-600 disabled:bg-gray-300 mb-2"
-                    >
-                      {order.sunoTaskId ? 'Sunoで再生成 🔄' : 'Sunoで生成開始 🎵'}
-                    </button>
+                    <div className="text-center py-4 text-gray-500 text-sm">
+                      {order.currentStep === 'song' ? (
+                        <span className="text-blue-600 animate-pulse">生成待機中...</span>
+                      ) : (
+                        <span>前ステップ完了待ち</span>
+                      )}
+                    </div>
                   )}
 
-                  {/* 生成済み楽曲リスト */}
+                  {/* 生成済み楽曲リスト（閲覧のみ） */}
                   {order.generatedSongs && order.generatedSongs.length > 0 && (
                     <div className="space-y-3 mt-2">
                       {order.generatedSongs.map((song, idx) => (
-                        <div key={idx} className={`p-2 border rounded ${order.selectedSongUrl === song.audio_url ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
-                          <p className="text-xs font-bold mb-1">候補 {idx + 1}</p>
+                        <div key={idx} className={`p-2 border rounded ${order.selectedSongIndex === idx ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
+                          <p className="text-xs font-bold mb-1">
+                            曲 {idx + 1}
+                            {order.selectedSongIndex === idx && <span className="ml-2 text-green-700">（顧客選択）</span>}
+                          </p>
                           <audio controls src={song.audio_url} className="w-full h-8 mb-2" />
-                          {order.selectedSongUrl !== song.audio_url && (
-                            <button
-                              onClick={() => handleSelectSong(order, song.audio_url)}
-                              className="bg-blue-500 text-white text-xs px-2 py-1 rounded w-full"
-                            >
-                              この曲を採用 👍
-                            </button>
-                          )}
-                          {order.selectedSongUrl === song.audio_url && (
-                            <p className="text-center text-green-700 text-xs font-bold">採用済み ✅</p>
+                          {song.previewReady && (
+                            <p className="text-xs text-green-600">プレビュー生成済み</p>
                           )}
                         </div>
                       ))}
@@ -1042,7 +1034,7 @@ const AdminPage = ({ user }) => {
                 </div>
 
                 <div className="bg-blue-50 p-4 rounded border border-blue-200">
-                  <h4 className="font-bold text-gray-700 mb-2">3. 動画生成 🎬</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">3. 動画（支払後自動生成）</h4>
 
                   {/* 背景テンプレート表示 */}
                   {(() => {
@@ -1051,30 +1043,17 @@ const AdminPage = ({ user }) => {
                       <div className="flex items-center gap-2 mb-3 p-2 bg-white rounded border">
                         <div className={`w-6 h-9 rounded ${template.previewClass}`}></div>
                         <span className="text-sm text-gray-700">
-                          背景テンプレ: <span className="font-medium">{template.name}</span>
-                          <span className="text-gray-400 ml-1">({template.id})</span>
+                          背景: <span className="font-medium">{template.name}</span>
                         </span>
                       </div>
                     );
                   })()}
 
-                  {/* 生成状態表示 */}
-                  {order.videoGenerationStatus === "processing" && (
+                  {/* 動画生成状態 */}
+                  {order.status === 'video_generating' && (
                     <div className="text-center py-4 text-blue-600 font-bold animate-pulse mb-2">
-                      生成中... 2-3分お待ちください
+                      動画生成中... 自動更新されます
                     </div>
-                  )}
-
-                  {order.videoGenerationStatus === "failed" && (
-                    order.videoGenerationError?.includes("deadline") ? (
-                      <div className="text-center py-2 text-yellow-600 text-sm mb-2">
-                        ⏳ バックグラウンドで処理中...（しばらくお待ちください）
-                      </div>
-                    ) : (
-                      <div className="text-center py-2 text-red-600 text-sm mb-2">
-                        ❌ 生成失敗: {order.videoGenerationError}
-                      </div>
-                    )
                   )}
 
                   {order.videoGenerationStatus === "completed" && (
@@ -1088,14 +1067,11 @@ const AdminPage = ({ user }) => {
                     </div>
                   )}
 
-                  {/* 生成ボタン */}
-                  <button
-                    onClick={() => handleGenerateVideos(order)}
-                    disabled={!order.selectedSongUrl || order.videoGenerationStatus === "processing"}
-                    className="bg-purple-600 text-white w-full py-2 rounded shadow hover:bg-purple-700 disabled:bg-gray-300 mb-3"
-                  >
-                    {order.videoGenerationStatus === "completed" ? "動画を再生成 🔄" : "動画を生成 🎬"}
-                  </button>
+                  {!order.isPaid && order.status !== 'video_generating' && order.status !== 'completed' && (
+                    <div className="text-center py-4 text-gray-500 text-sm">
+                      顧客の支払い後に自動生成されます
+                    </div>
+                  )}
 
                   {/* プレビュー音声確認 */}
                   {order.previewAudioPath && (
