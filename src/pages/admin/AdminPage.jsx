@@ -897,6 +897,7 @@ const AdminPage = ({ user }) => {
                   {order.plan === 'simple' ? (
                     <div className="mt-2 text-gray-700">
                       <h3 className="text-xl font-bold mb-1">{order.targetName} 様</h3>
+                      <p className="text-xs text-gray-500 mb-2 font-mono">{order.id}</p>
                       <p>🎨 色: {order.targetColor}</p>
                       <p>💖 気持ち: {Array.isArray(order.targetFeeling) ? order.targetFeeling.join(", ") : order.targetFeeling}</p>
                       <p>💌 言葉: {order.magicWord}</p>
@@ -905,6 +906,7 @@ const AdminPage = ({ user }) => {
                   ) : (
                     <div className="mt-2 text-gray-700">
                       <h3 className="text-xl font-bold mb-1">{order.targetName} 様</h3>
+                      <p className="text-xs text-gray-500 mb-2 font-mono">{order.id}</p>
                       <p className="font-bold">🎵 {order.proGenre}</p>
                       <p>🎤 {order.proGender} / 🎻 {Array.isArray(order.proInstruments) ? order.proInstruments.join(", ") : order.proInstruments}</p>
                       <div className="mt-2 text-sm bg-gray-50 p-2 rounded">
