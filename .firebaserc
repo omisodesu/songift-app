@@ -7,15 +7,21 @@
   "targets": {
     "birthday-song-app-stg": {
       "hosting": {
-        "app": [
+        "b2c": [
           "birthday-song-app-stg"
+        ],
+        "b2b": [
+          "birthday-song-app-stg-b2b"
         ]
       }
     },
     "birthday-song-app": {
       "hosting": {
-        "app": [
+        "b2c": [
           "birthday-song-app"
+        ],
+        "b2b": [
+          "birthday-song-app-b2b"
         ]
       }
     }

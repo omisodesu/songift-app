@@ -1,0 +1,17 @@
+{
+  "name": "@songift/shared",
+  "version": "1.0.0",
+  "description": "Shared constants and types for Songift apps",
+  "type": "module",
+  "main": "./src/index.cjs",
+  "module": "./src/index.js",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "require": "./src/index.cjs"
+    }
+  },
+  "files": [
+    "src"
+  ]
+}

@@ -7,15 +7,25 @@ const axios = require("axios");
 const crypto = require("crypto");
 const {Storage} = require("@google-cloud/storage");
 const {GoogleAuth} = require("google-auth-library");
+const {COLLECTIONS} = require("@songift/shared");
 
 admin.initializeApp();
+
+// Firestore collection references
+const db = admin.firestore();
+const ordersCollection = () => db.collection(COLLECTIONS.ORDERS);
+const automationQueueCollection = () => db.collection(COLLECTIONS.AUTOMATION_QUEUE);
+const feedbackCollection = () => db.collection(COLLECTIONS.FEEDBACK);
+const visitorsCollection = () => db.collection(COLLECTIONS.VISITORS);
+const followupQueueCollection = () => db.collection(COLLECTIONS.FOLLOWUP_QUEUE);
+const rateLimitsCollection = () => db.collection(COLLECTIONS.RATE_LIMITS);
 const storage = new Storage();
 
 /**
  * レート制限チェック（Firestoreベース）
  */
 async function checkRateLimit(ip, maxRequests, windowMs) {
-  const rateLimitRef = admin.firestore().collection("rate_limits").doc(ip);
+  const rateLimitRef = rateLimitsCollection().doc(ip);
   const doc = await rateLimitRef.get();
 
   const now = Date.now();

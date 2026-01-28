@@ -1,43 +1,29 @@
 {
-  "name": "birthday-song-app",
+  "name": "songift-monorepo",
   "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "dev:stg": "vite --mode stg",
-    "dev:prod": "vite --mode production",
-    "build": "vite build",
-    "build:stg": "vite build --mode stg",
-    "build:prod": "vite build --mode production",
-    "deploy:stg": "npm run build:stg && firebase use stg && firebase deploy --only hosting",
-    "deploy:prod": "npm run build:prod && firebase use prod && firebase deploy --only hosting",
-    "lint": "eslint .",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "firebase": "^12.6.0",
-    "framer-motion": "^12.24.0",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
-    "react-router-dom": "^7.9.6"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@tailwindcss/postcss": "^4.1.17",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "autoprefixer": "^10.4.22",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.17",
-    "vite": "npm:rolldown-vite@7.2.5"
-  },
-  "overrides": {
-    "vite": "npm:rolldown-vite@7.2.5"
+    "dev:b2c": "npm run dev -w @songift/b2c-web",
+    "dev:b2b": "npm run dev -w @songift/b2b-web",
+    "dev:b2c:stg": "npm run dev:stg -w @songift/b2c-web",
+    "dev:b2b:stg": "npm run dev:stg -w @songift/b2b-web",
+    "build:b2c": "npm run build -w @songift/b2c-web",
+    "build:b2b": "npm run build -w @songift/b2b-web",
+    "build:b2c:stg": "npm run build:stg -w @songift/b2c-web",
+    "build:b2b:stg": "npm run build:stg -w @songift/b2b-web",
+    "build:b2c:prod": "npm run build:prod -w @songift/b2c-web",
+    "build:b2b:prod": "npm run build:prod -w @songift/b2b-web",
+    "build:all": "npm run build:b2c && npm run build:b2b",
+    "deploy:stg:b2c": "npm run build:b2c:stg && firebase use stg && firebase deploy --only hosting:b2c",
+    "deploy:stg:b2b": "npm run build:b2b:stg && firebase use stg && firebase deploy --only hosting:b2b",
+    "deploy:prod:b2c": "npm run build:b2c:prod && firebase use prod && firebase deploy --only hosting:b2c",
+    "deploy:prod:b2b": "npm run build:b2b:prod && firebase use prod && firebase deploy --only hosting:b2b",
+    "deploy:stg:all": "npm run build:b2c:stg && npm run build:b2b:stg && firebase use stg && firebase deploy --only hosting",
+    "deploy:prod:all": "npm run build:b2c:prod && npm run build:b2b:prod && firebase use prod && firebase deploy --only hosting",
+    "lint": "npm run lint -w @songift/b2c-web && npm run lint -w @songift/b2b-web"
   }
 }

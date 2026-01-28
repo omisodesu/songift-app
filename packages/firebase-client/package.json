@@ -1,0 +1,19 @@
+{
+  "name": "@songift/firebase-client",
+  "version": "1.0.0",
+  "description": "Firebase client initialization for Songift browser apps",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "firebase": "^12.0.0"
+  },
+  "dependencies": {
+    "@songift/shared": "*"
+  }
+}
