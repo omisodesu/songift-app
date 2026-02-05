@@ -7,7 +7,16 @@ const axios = require("axios");
 const crypto = require("crypto");
 const {Storage} = require("@google-cloud/storage");
 const {GoogleAuth} = require("google-auth-library");
-const {COLLECTIONS} = require("@songift/shared");
+
+// Firestore collection names (from @songift/shared)
+const COLLECTIONS = {
+  ORDERS: 'orders',
+  AUTOMATION_QUEUE: 'automation_queue',
+  FEEDBACK: 'feedback',
+  VISITORS: 'visitors',
+  FOLLOWUP_QUEUE: 'followup_queue',
+  RATE_LIMITS: 'rate_limits',
+};
 
 admin.initializeApp();
 
@@ -122,7 +131,7 @@ function resolveEmailDestination(appEnv, stgOverrideTo, originalTo, originalSubj
  */
 exports.createOrder = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["SLACK_WEBHOOK_URL", "APP_ENV"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -193,73 +202,21 @@ exports.createOrder = onRequest({
     const orderId = orderRef.id;
     console.log(`Order created: ${orderId}`);
 
-    // 環境変数取得（メール送信とURL生成で共通使用）
+    // 環境変数取得
     const appEnv = process.env.APP_ENV || "prod";
-    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-
-    // 専用URL生成（環境に応じてドメイン切替）
-    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-    const orderUrl = `${frontendBaseUrl}/o/${orderId}?t=${token}`;
-    console.log(`Order URL generated: ${orderUrl} (env: ${appEnv})`);
-
-    // フィードバックURL生成（注文受付メール用）
-    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=order_received&oid=${orderId}`;
-
-    // メール本文作成
-    const emailBody = `${email}様のバースデーソング作成を承りました。
-
-以下のURLから進捗状況を確認できます：
-${orderUrl}
-
-※このURLは30日間有効です。
-※完成次第、こちらのメールアドレスにお知らせします。
-
----
-
-ご注文時の操作についてご意見をお聞かせください（30秒で完了）：
-${feedbackUrl}
-
----
-Songift - 世界に一つのバースデーソング`;
-
-    // SendGrid でメール送信
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) {
-      throw new Error("SENDGRID_API_KEY is not configured");
-    }
-
-    sgMail.setApiKey(sendgridApiKey.trim());
-
-    // 環境に応じてメール送信先を解決
-    const originalSubject = `【Songift】ご注文を受け付けました - ${email}様`;
-    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, email, originalSubject);
-
-    if (emailDestination.shouldSkip) {
-      // STG環境でメール送信先が未設定の場合はスキップ
-      console.log(`[STG] Email sending skipped (no override address configured)`);
-    } else {
-      const msg = {
-        to: emailDestination.to,
-        from: {
-          email: "fukui@gadandan.co.jp",
-          name: "Songift",
-        },
-        subject: emailDestination.subject,
-        text: emailBody,
-        html: emailBody.replace(/\n/g, "<br>"),
-      };
-
-      await sgMail.send(msg);
-      console.log(`Confirmation email sent to: ${emailDestination.to} (original: ${email}, env: ${appEnv})`);
-    }
 
     // Slack通知送信（PROD環境のみ）
     if (appEnv === "prod") {
       const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
       if (slackWebhookUrl) {
-        const slackMessage = plan === "simple"
-          ? `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`
-          : `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*メール:* ${email}`;
+        let slackMessage;
+        if (plan === "nursingHome") {
+          slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 楽曲生成\n*お名前:* ${formData.targetName}\n*性別:* ${formData.nhGender}\n*ジャンル:* ${formData.nhGenre}\n*季節:* ${formData.nhSeason}\n*思い出:* ${formData.nhMemory}\n*人柄:* ${formData.nhPersonality}\n*メール:* ${email}`;
+        } else if (plan === "simple") {
+          slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`;
+        } else {
+          slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*メール:* ${email}`;
+        }
 
         await axios.post(slackWebhookUrl, {
           text: slackMessage,
@@ -271,20 +228,10 @@ Songift - 世界に一つのバースデーソング`;
       console.log(`[${appEnv.toUpperCase()}] Slack notification skipped in createOrder (non-production environment)`);
     }
 
-    // レスポンスメッセージを環境に応じて調整
-    let responseMessage = "注文を受け付けました。メールをご確認ください。";
-    if (appEnv !== "prod") {
-      if (emailDestination.shouldSkip) {
-        responseMessage = "注文を受け付けました（STG環境: メール送信はスキップされました）。";
-      } else {
-        responseMessage = `注文を受け付けました（STG環境: テスト用メールアドレスに送信されました）。`;
-      }
-    }
-
     res.status(200).json({
       success: true,
       orderId: orderId,
-      message: responseMessage,
+      message: "注文を受け付けました。",
     });
   } catch (error) {
     console.error("Error creating order:", error);
@@ -352,9 +299,14 @@ exports.sendSlackNotification = onRequest({
     }
 
     // Slackメッセージ作成
-    const slackMessage = plan === "simple"
-      ? `🎉 *新しい注文が入りました！*\n\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*ユーザー:* ${userEmail}`
-      : `🎉 *新しい注文が入りました！*\n\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*ユーザー:* ${userEmail}`;
+    let slackMessage;
+    if (plan === "nursingHome") {
+      slackMessage = `🎉 *新しい注文が入りました！*\n\n*プラン:* 楽曲生成\n*お名前:* ${formData.targetName}\n*性別:* ${formData.nhGender}\n*ジャンル:* ${formData.nhGenre}\n*季節:* ${formData.nhSeason}\n*思い出:* ${formData.nhMemory}\n*人柄:* ${formData.nhPersonality}\n*ユーザー:* ${userEmail}`;
+    } else if (plan === "simple") {
+      slackMessage = `🎉 *新しい注文が入りました！*\n\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*ユーザー:* ${userEmail}`;
+    } else {
+      slackMessage = `🎉 *新しい注文が入りました！*\n\n*プラン:* プロモード\n*お名前:* ${formData.targetName}\n*ジャンル:* ${formData.proGenre}\n*楽器:* ${Array.isArray(formData.proInstruments) ? formData.proInstruments.join(", ") : formData.proInstruments}\n*性別:* ${formData.proGender}\n*メッセージ1:* ${formData.proMessage1}\n*メッセージ2:* ${formData.proMessage2}\n*ユーザー:* ${userEmail}`;
+    }
 
     // Slackに送信
     await axios.post(slackWebhookUrl, {
@@ -2253,6 +2205,315 @@ function buildProModePrompt(order) {
 }
 
 // =====================================================
+// 楽曲生成（老人ホーム版）用マッピング定義
+// =====================================================
+
+/**
+ * 性別×ジャンル → キー決定
+ */
+const GENDER_GENRE_TO_KEY = {
+  "男性_演歌": "C",
+  "女性_演歌": "G",
+  "男性_昭和歌謡": "G",
+  "女性_昭和歌謡": "C",
+  "男性_フォークソング": "D",
+  "女性_フォークソング": "G",
+  "男性_ジャズ": "F",
+  "女性_ジャズ": "Bb",
+};
+
+/**
+ * ジャンル → 音楽設定
+ */
+const NH_GENRE_TO_MUSIC = {
+  "演歌": {
+    genre: "Enka",
+    bpm: 120,
+    instruments: "piano, strings, shakuhachi",
+    vocalStyle: "vibrato, melismatic, traditional enka vocal style",
+  },
+  "昭和歌謡": {
+    genre: "Showa kayo",
+    bpm: 120,
+    instruments: "acoustic guitar, piano",
+    vocalStyle: "smooth, clear vocal, 1980s Japanese pop style, melodic phrasing",
+  },
+  "フォークソング": {
+    genre: "Folk",
+    bpm: 115,
+    instruments: "acoustic guitar, harmonica",
+    vocalStyle: "warm, natural vocal, storytelling style, 1980s Japanese folk",
+  },
+  "ジャズ": {
+    genre: "Jazz b",
+    bpm: 120,
+    instruments: "piano, saxophone",
+    vocalStyle: "smooth jazz vocal, relaxed phrasing, sophisticated 1980s style",
+  },
+};
+
+/**
+ * 人柄 → 追加タグ
+ */
+const NH_PERSONALITY_TO_TAGS = {
+  "優しくて温かい": "#loving #warm",
+  "頑張り屋で真面目": "#proud #accomplished",
+  "いつも笑顔で明るい": "#joyful #cheerful",
+  "感謝の気持ちを忘れない": "#grateful #thankful",
+  "人との会話が好き": "#warm #blessed",
+  "穏やかで落ち着いている": "#calm #peaceful",
+  "ユーモアがあって面白い": "#joyful #cheerful",
+  "好奇心旺盛": "#fulfilled #curious",
+};
+
+/**
+ * 楽曲生成（老人ホーム版）用のGeminiプロンプトを生成
+ */
+function buildNursingHomePrompt(order) {
+  const genderGenreKeyText = Object.entries(GENDER_GENRE_TO_KEY)
+    .map(([key, keyValue]) => `- ${key.replace("_", " × ")} → Key: ${keyValue}`)
+    .join("\n");
+
+  const genreMusicText = Object.entries(NH_GENRE_TO_MUSIC)
+    .map(([genre, music]) => `- ${genre} → ${music.genre}, ${music.bpm} bpm, ${music.instruments} / ${music.vocalStyle}`)
+    .join("\n");
+
+  const personalityTagsText = Object.entries(NH_PERSONALITY_TO_TAGS)
+    .map(([personality, tags]) => `- ${personality} → ${tags}`)
+    .join("\n");
+
+  return `
+あなたはプロの作詞作曲家兼Suno AIプロンプトエンジニアです。
+以下のフォーム回答から、バースデイソングの歌詞とSUNO AIプロンプトを生成してください。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+【フォーム回答】
+━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1. 歌い手の性別: ${order.nhGender}
+Q2. 曲の雰囲気: ${order.nhGenre}
+Q3. 歌の中で、歌ってもらいたい呼び名: ${order.targetName}
+Q4. 生まれた季節は?: ${order.nhSeason}
+Q5. この方がよく話される思い出は?: ${order.nhMemory}
+Q6. この方の人柄で当てはまるものは?: ${order.nhPersonality}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+歌詞創作ルール(重要)
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+選択肢をそのまま使わず、その「意味・感情・人生の重み」を理解して、
+哀愁漂う自然で詩的な日本語の歌詞に創作してください。毎回異なる表現にしてください。
+
+## パターン数:2,048種類
+- Q4(生まれた季節):4種類 × 各8表現 = 32パターン
+- Q5(思い出のテーマ):8種類
+- Q6(人柄):8種類
+
+---
+
+## ■ Verse / Aメロ(25〜30文字、2行で1つの文章、哀愁パート)
+**Q4(生まれた季節) + Q5(思い出のテーマ)を組み合わせて創作**
+生まれた季節への愛着と、よく話される思い出を重ねる
+
+### 【Q4:生まれた季節 各8パターン】
+
+**1. 春生まれ(8パターン)**
+1. 「桜が咲く季節に生を受けて」
+2. 「温かな春の風に迎えられて」
+3. 「花が舞う頃に生まれてきた」
+4. 「新しい命が芽吹く春に」
+5. 「柔らかな春の光を浴びて」
+6. 「芽吹きの季節に産声を上げた」
+7. 「春の訪れとともに生まれて」
+8. 「花の香りに包まれて生まれた」
+
+**2. 夏生まれ(8パターン)**
+1. 「眩しい太陽の下に生まれて」
+2. 「暑い夏の日に産声を上げた」
+3. 「青い空が広がる季節に」
+4. 「輝く夏に生を受けて」
+5. 「夏の光を浴びて生まれてきた」
+6. 「蝉の声が響く季節に」
+7. 「暑さの中で迎えられて」
+8. 「太陽が照りつける日に生まれた」
+
+**3. 秋生まれ(8パターン)**
+1. 「実りの秋に生まれてきた」
+2. 「色づく木々の季節に」
+3. 「澄んだ空気の秋に生を受けて」
+4. 「紅葉の美しい頃に生まれて」
+5. 「秋の風が吹く季節に」
+6. 「収穫の季節に産声を上げた」
+7. 「黄金色の秋に迎えられて」
+8. 「静かな秋の日に生まれてきた」
+
+**4. 冬生まれ(8パターン)**
+1. 「静かな冬の日に生まれて」
+2. 「雪が降る季節に生を受けて」
+3. 「寒い冬に温もりをもらって」
+4. 「白い雪の中で迎えられて」
+5. 「冬の空の下に産声を上げた」
+6. 「凍てつく季節に生まれてきた」
+7. 「雪景色に包まれて生まれた」
+8. 「厳しい冬に命を授かって」
+
+### 【Q5:よく話される思い出のテーマ 8種類】
+
+**1. 家族のこと(お子さん、お孫さんの話など)**
+例)「桜が咲く季節に生を受けて / 家族と笑い合った日々が懐かしい」(27文字)
+   「眩しい太陽の下に生まれて / 家族の温もりに包まれていたよ」(28文字)
+
+**2. お仕事のこと(昔の仕事、働いていた頃の話)**
+例)「実りの秋に生まれてきたから / 懸命に働いた日々が誇らしいよ」(28文字)
+   「静かな冬の日に生まれて / 汗を流した仕事が心に残るんだ」(27文字)
+
+**3. 故郷や育った場所のこと**
+例)「温かな春の風に迎えられて / 故郷の景色が今も心にあるよ」(27文字)
+   「暑い夏の日に産声を上げた / あの街の風景を思い出すんだよ」(27文字)
+
+**4. 友人や仲間のこと**
+例)「色づく木々の季節に生まれて / 友と語り合った日々が恋しいよ」(28文字)
+   「雪が降る季節に生を受けて / 仲間と笑い合った頃を思い出す」(28文字)
+
+**5. 旅行や行楽の思い出**
+例)「花が舞う頃に生まれてきた / 旅した日の景色が忘れられない」(27文字)
+   「青い空が広がる季節に / 遠くへ行った日々が懐かしいよ」(26文字)
+
+**6. 趣味や好きだったこと**
+例)「澄んだ空気の秋に生を受けて / 好きなことに夢中だった日々を」(28文字)
+   「寒い冬に温もりをもらって / 趣味に打ち込んだ時間が宝物だ」(28文字)
+
+**7. 特別な出来事(結婚式、お祝いなど)**
+例)「柔らかな春の光を浴びて / あの日の喜びが今も心にある」(26文字)
+   「輝く夏に生を受けて / 特別な日のことを思い出すんだ」(25文字)
+
+**8. 特にない・いろいろな話をされる**
+例)「紅葉の美しい頃に生まれて / たくさんの思い出が胸にあるよ」(27文字)
+   「白い雪の中で迎えられて / 様々な日々を重ねてきたんだね」(27文字)
+
+---
+
+## ■ Pre-Chorus / Bメロ(25〜30文字、2行で1つの文章、哀愁パート)
+**Q6(人柄)を基に創作**
+その人の人柄と人生への感謝を込めた雰囲気
+
+### 【Q6:人柄 8種類】
+
+**1. 優しくて温かい**
+例)「優しい心で人と接してきた / 温かな日々を送れたと思うよ」(27文字)
+   「人への思いやりを忘れずに / 愛に溢れた人生だったんだね」(27文字)
+
+**2. 頑張り屋で真面目**
+例)「懸命に努力を重ねてきた / よく頑張ったと胸を張れるんだ」(26文字)
+   「真面目に一生懸命歩んできた / 誇れる人生を送れたと思うよ」(28文字)
+
+**3. いつも笑顔で明るい**
+例)「笑顔でいようと心に決めていた / 楽しいことばかりだったと思うよ」(29文字)
+   「明るく前向きに生きてきたから / 幸せが自然と寄ってきたんだね」(28文字)
+
+**4. 感謝の気持ちを忘れない**
+例)「ありがとうを忘れずにいたから / 感謝しかないこの人生なんだよ」(28文字)
+   「感謝を胸に生き続けてきたから / 温かい繋がりに恵まれたんだよ」(28文字)
+
+**5. 人との会話が好き**
+例)「人を想う心を持ち続けたから / 繋がりに恵まれた人生なんだよ」(28文字)
+   「人との出会いを大切にしてきた / 支え合える仲間がいたんだね」(28文字)
+
+**6. 穏やかで落ち着いている**
+例)「自分らしさを忘れずにいたから / 穏やかに過ごせた人生なんだね」(28文字)
+   「心穏やかに歩んできた道が / 何よりの幸せだったと思うよ」(27文字)
+
+**7. ユーモアがあって面白い**
+例)「笑いを忘れずに生きてきた / 楽しい日々を送れたと思うよ」(26文字)
+   「ユーモアを大切にしてきたから / 明るい人生になったと感じるよ」(28文字)
+
+**8. 好奇心旺盛**
+例)「新しいことに挑戦し続けたから / 豊かな人生になったと感じるよ」(28文字)
+   「学ぶことを楽しみ続けてきた / 充実した日々を送れたと思うよ」(27文字)
+
+---
+
+## ■ Chorus / サビ(明るく温かいパート)
+**Q3(呼び名)を使った祝福メッセージ**
+
+happy birthday ${order.targetName}
+happy birthday ${order.targetName}
+
+---
+
+## 【創作のポイント】
+- Verse/Pre-Chorusは2行で1つの完結した文章になる
+- Verseの1行目は「生まれた季節(8パターンから1つ選択)」、2行目は「よく話される思い出」
+- Pre-Chorusは「人柄」から人生への感謝を表現
+- 接続詞(を、が、と、から、ながら)で自然につなぐ
+- 哀愁漂う、ノスタルジックな雰囲気
+- 歌詞として歌いやすい流れ
+- 合計25〜30文字
+- Q4の季節表現8パターンから毎回ランダムに1つ選んで使用
+- 同じ意味でも毎回違う言い回しに
+- 年配者に響く、心に沁みる表現
+- 人生の重みと温かさを感じる言葉選び
+- 過去を懐かしみつつ、前向きな気持ち
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+変換ルール
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+■ Q1(歌い手の性別)→ ボーカル性別 + キー決定
+- 男性の声 → male vocal
+- 女性の声 → female vocal
+※キーはQ1(性別)とQ2(ジャンル)の組み合わせで自動決定
+
+■ Q2(曲の雰囲気)→ ジャンル・BPM・楽器・キー・ボーカルスタイル
+※キーはQ1の性別によって変化
+
+【キー対応表】
+${genderGenreKeyText}
+
+【ジャンル詳細】
+${genreMusicText}
+
+■ Q4(生まれた季節)→ 歌詞に自然に組み込む(8パターンから1つをランダムに選択)
+
+■ Q5(思い出のテーマ)→ Verseの2行目に反映
+
+■ Q6(人柄)→ Pre-Chorusに反映 + 追加タグ
+${personalityTagsText}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+出力形式
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【出力フォーマット (JSON)】
+必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
+{
+  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4の8パターンから1つ選択 + Q5から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Pre-Chorus]\\n(Q6から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "sunoPrompt": "happy birthday | (ジャンル) | (BPM) bpm | key: (キー) | 3/4 waltz rhythm | (楽器) | Japanese (vocal性別) vocal | (ボーカルスタイル) | #birthday #nostalgic #emotional #upbeat #1min (Q6の追加タグ)"
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+【注意事項】
+━━━━━━━━━━━━━━━━━━━━━━━━━
+- 選択肢は直接使わず、意味を理解して哀愁漂う歌詞に創作
+- Q3の呼び名はそのまま使用(ひらがな・カタカナ・漢字そのまま)
+- Q4の生まれた季節は、該当する季節の8パターンから1つをランダムに選び、Verseの1行目に自然に組み込む
+- Q5の思い出のテーマは、Verseの2行目に自然に組み込む
+- Q6の人柄は、Pre-Chorusに自然に組み込む
+- SUNOプロンプトは1行で出力
+- 楽器名は英語の小文字で
+- キーはQ1(性別)とQ2(ジャンル)の組み合わせで自動決定される(すべてメジャーキー)
+- 各ジャンルにボーカルスタイル指定を追加
+- 絵文字は歌詞に含めない
+- 毎回異なる表現で創作する
+- Verse/Pre-Chorusはそれぞれ25〜30文字、2行で1つの文章になるように
+- 年配者に響く、人生の重みを感じる言葉選び
+- 哀愁と温かさが共存する雰囲気
+- Chorusは4回繰り返し(happy birthdayを4回)
+
+上記のルールに従って、JSON形式で出力してください。
+  `.trim();
+}
+
+// =====================================================
 // 自動化システム - ヘルパー関数
 // =====================================================
 
@@ -2468,9 +2729,14 @@ async function processPromptStep(orderRef, order, orderId) {
   }
 
   // プロンプト生成
-  const systemPrompt = order.plan === "pro"
-    ? buildProModePrompt(order)
-    : buildSimpleModePrompt(order);
+  let systemPrompt;
+  if (order.plan === "nursingHome") {
+    systemPrompt = buildNursingHomePrompt(order);
+  } else if (order.plan === "pro") {
+    systemPrompt = buildProModePrompt(order);
+  } else {
+    systemPrompt = buildSimpleModePrompt(order);
+  }
 
   const response = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
@@ -2488,19 +2754,19 @@ async function processPromptStep(orderRef, order, orderId) {
   const cleanJsonText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
   const parsedResult = JSON.parse(cleanJsonText);
 
-  // Firestore更新
+  // Firestore更新（楽曲生成は手動で行うため、ここで停止）
   await orderRef.update({
     generatedLyrics: parsedResult.lyrics,
     generatedPrompt: parsedResult.sunoPrompt,
     promptGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
-    status: "processing",
-    currentStep: "song",
+    status: "prompt_ready",
+    currentStep: null,
+    automationStatus: "paused",
   });
 
-  // 次のステップをキューに追加
-  await scheduleNextStep(orderId, "song");
+  // 楽曲生成は手動で行うため、自動キュー追加はしない
 
-  console.log(`[processPromptStep] Completed for order ${orderId}`);
+  console.log(`[processPromptStep] Completed for order ${orderId} - waiting for manual song generation`);
 }
 
 /**
@@ -2565,10 +2831,12 @@ async function processSongStep(orderRef, order, orderId) {
 }
 
 /**
- * プレビュー生成ステップ（2曲分）
+ * プレビュー生成ステップ（2曲分）- 廃止
+ * 管理者が選曲するフローに変更したため、プレビュー生成は不要
  */
 async function processPreviewStep(orderRef, order, orderId) {
-  console.log(`[processPreviewStep] Processing order ${orderId}`);
+  console.log(`[processPreviewStep] DEPRECATED - skipping for order ${orderId}`);
+  return; // プレビュー生成は廃止
 
   const videoGeneratorUrl = process.env.VIDEO_GENERATOR_URL;
   if (!videoGeneratorUrl) {
@@ -2615,10 +2883,12 @@ async function processPreviewStep(orderRef, order, orderId) {
 }
 
 /**
- * プレビュー完成メール送信ステップ
+ * プレビュー完成メール送信ステップ - 廃止
+ * 管理者が選曲するフローに変更したため、プレビューメールは不要
  */
 async function processEmailStep(orderRef, order, orderId) {
-  console.log(`[processEmailStep] Processing order ${orderId}`);
+  console.log(`[processEmailStep] DEPRECATED - skipping for order ${orderId}`);
+  return; // プレビューメール送信は廃止
 
   const sendgridApiKey = process.env.SENDGRID_API_KEY;
   if (!sendgridApiKey) {
@@ -2935,12 +3205,13 @@ exports.checkSunoStatusScheduled = onSchedule({
             status: "song_generated",
             sunoStatus: "SUCCESS",
             generatedSongs: songs,
+            currentStep: null,
+            automationStatus: "paused",
           });
 
-          // プレビュー生成ステップをキューに追加
-          await scheduleNextStep(orderId, "preview");
+          // プレビュー生成は廃止、管理者が選曲後に動画生成へ進む
 
-          console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId}`);
+          console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - waiting for admin selection`);
         }
       }
     } catch (error) {
@@ -3056,4 +3327,3 @@ exports.getPreviewSignedUrlBySongIndex = onCall({
 
   return {signedUrl};
 });
-

@@ -41,9 +41,12 @@ function App() {
       {user && isAdmin(user) && (
         <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
           <div className="flex items-center gap-6">
-            <Link to="/" className="font-bold text-blue-600 text-xl">Songift</Link>
+            <Link to="/" className="font-bold text-blue-600 text-xl">バースデーソングメーカー</Link>
             <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
               管理者画面へ
+            </Link>
+            <Link to="/order" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-amber-100 px-3 py-1 rounded">
+              新規オーダー
             </Link>
           </div>
           <div className="flex items-center gap-4">

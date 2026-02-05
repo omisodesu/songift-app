@@ -5,7 +5,6 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from '../../lib/firebase';
-import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_INTENTS, PRICE_PERCEPTIONS, CHANNEL_QUESTIONS } from '../../lib/feedbackApi';
 import { getBackgroundTemplate } from '../../lib/backgroundTemplates';
 import { buildSimpleModePrompt } from '../../lib/prompts/simpleMode';
 import { buildProModePrompt } from '../../lib/prompts/proMode';
@@ -15,13 +14,6 @@ const AdminPage = ({ user }) => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // タブ管理
-  const [activeTab, setActiveTab] = useState('orders');
-
-  // フィードバック一覧
-  const [feedbacks, setFeedbacks] = useState([]);
-  const [feedbackLoading, setFeedbackLoading] = useState(true);
 
   // 編集機能用の状態管理
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -61,20 +53,6 @@ const AdminPage = ({ user }) => {
     return () => unsubscribe();
   }, []);
 
-  // フィードバック一覧の取得
-  useEffect(() => {
-    const q = query(collection(db, "feedback"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate().toLocaleString() || "日時不明"
-      }));
-      setFeedbacks(data);
-      setFeedbackLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
 
   // ポーリング処理 (useCallbackでラップ)
   const checkSunoStatus = useCallback(async (order) => {
@@ -330,36 +308,6 @@ const AdminPage = ({ user }) => {
     });
   };
 
-  // プレビュー案内メール再送（固定テンプレート使用）
-  const handleResendPreviewEmail = async (order) => {
-    if (!confirm("プレビュー案内メールを再送します。よろしいですか？")) return;
-
-    try {
-      await updateDoc(doc(db, "orders", order.id), {previewEmailStatus: "sending"});
-
-      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
-      const response = await fetch(`${functionsUrl}/sendPreviewEmail`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          orderId: order.id,
-        }),
-      });
-
-      if (!response.ok) throw new Error('メール送信に失敗しました');
-
-      alert(`✅ プレビュー案内メールを再送しました！\n\n送信先: ${order.userEmail}`);
-      window.location.reload();
-    } catch (error) {
-      console.error("Preview email send error:", error);
-      await updateDoc(doc(db, "orders", order.id), {
-        previewEmailStatus: "error",
-        previewEmailError: error.message
-      });
-      alert("メール送信エラー: " + error.message);
-    }
-  };
-
   // MP4納品メール送信（processPaymentで自動送信されるため、ここでは使わない）
   const handleSendDeliveryMP4 = async (order) => {
     if (!order.fullVideoPath) return alert("フル動画が生成されていません");
@@ -508,22 +456,6 @@ const AdminPage = ({ user }) => {
     }
   };
 
-  // 管理者向けプレビュー音声の署名URL取得
-  const handleGetAdminPreviewUrl = async (orderId) => {
-    try {
-      const getAdminPreviewSignedUrl = httpsCallable(functions, "getAdminPreviewSignedUrl");
-      const result = await getAdminPreviewSignedUrl({ orderId });
-
-      setAdminSignedUrls(prev => ({
-        ...prev,
-        [`preview_${orderId}`]: result.data.signedUrl
-      }));
-    } catch (error) {
-      console.error("プレビューURL取得エラー:", error);
-      alert("❌ プレビューURL取得に失敗しました。\n\nエラー: " + error.message);
-    }
-  };
-
   // 管理者向けフル動画の署名URL取得
   const handleGetAdminFullUrl = async (orderId) => {
     try {
@@ -541,342 +473,14 @@ const AdminPage = ({ user }) => {
   };
 
 
-  // フィードバックとお問い合わせを分離
-  const regularFeedbacks = feedbacks.filter(fb => fb.channel !== FEEDBACK_CHANNELS.INQUIRY_FORM);
-  const inquiries = feedbacks.filter(fb => fb.channel === FEEDBACK_CHANNELS.INQUIRY_FORM);
-  // 未対応の返金リクエストのみカウント
-  const unhandledRefundCount = inquiries.filter(fb => fb.refundRequested && !fb.handled).length;
-
-  // お問い合わせを対応済みにする
-  const handleMarkAsHandled = async (inquiryId) => {
-    try {
-      const feedbackRef = doc(db, 'feedback', inquiryId);
-      await updateDoc(feedbackRef, {
-        handled: true,
-        handledAt: serverTimestamp(),
-      });
-    } catch (error) {
-      console.error('対応済みマーク失敗:', error);
-      alert('対応済みにできませんでした: ' + error.message);
-    }
-  };
-
-  // ヘルパー関数: 注文IDから注文情報を取得
-  const getOrderByOrderId = (orderId) => {
-    return orders.find(order => order.id === orderId);
-  };
-
-  // ヘルパー関数: ラベル取得
-  const getChannelLabel = (channel) => {
-    const channelLabels = {
-      [FEEDBACK_CHANNELS.ORDER_RECEIVED]: '注文受付メール',
-      [FEEDBACK_CHANNELS.ORDER_CONFIRM]: '注文確認画面',
-      [FEEDBACK_CHANNELS.PREVIEW_EMAIL]: 'プレビューメール',
-      [FEEDBACK_CHANNELS.DELIVERY_EMAIL]: '納品メール',
-      [FEEDBACK_CHANNELS.FOLLOWUP_EMAIL]: 'フォローアップ',
-      [FEEDBACK_CHANNELS.INQUIRY_FORM]: 'お問い合わせ',
-    };
-    return channelLabels[channel] || channel;
-  };
-
-  // チャネル別追加質問のラベル取得
-  const getChannelQuestionLabel = (channel, fieldName, value) => {
-    const config = CHANNEL_QUESTIONS[channel];
-    if (!config || !config.options) return value;
-    const option = config.options.find(o => o.value === value);
-    return option?.label || value;
-  };
-
-  const getReorderIntentLabel = (value) => {
-    const item = REORDER_INTENTS.find(r => r.value === value);
-    return item?.label || value;
-  };
-
-  const getPricePerceptionLabel = (value) => {
-    const item = PRICE_PERCEPTIONS.find(p => p.value === value);
-    return item?.label || value;
-  };
-
-  const getDissatisfactionLabel = (value) => {
-    const item = DISSATISFACTION_REASONS.find(d => d.value === value);
-    return item?.label || value;
-  };
-
-  const getBarrierLabel = (value) => {
-    const item = BARRIER_REASONS.find(b => b.value === value);
-    return item?.label || value;
-  };
-
-  // 星評価表示
-  const renderStars = (rating) => {
-    return (
-      <span className="text-yellow-500">
-        {'★'.repeat(rating)}{'☆'.repeat(5 - rating)}
-      </span>
-    );
-  };
-
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-800 mb-6">管理者ダッシュボード</h1>
-
-        {/* タブ切り替え */}
-        <div className="flex gap-2 mb-6">
-          <button
-            onClick={() => setActiveTab('orders')}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              activeTab === 'orders'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            注文一覧 ({orders.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('feedback')}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              activeTab === 'feedback'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            フィードバック ({regularFeedbacks.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('inquiries')}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors relative ${
-              activeTab === 'inquiries'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            お問い合わせ ({inquiries.length})
-            {unhandledRefundCount > 0 && (
-              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                {unhandledRefundCount}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* フィードバック一覧 */}
-        {activeTab === 'feedback' && (
-          <div className="space-y-4">
-            {feedbackLoading ? (
-              <div className="text-center py-10">フィードバックを読み込んでいます...</div>
-            ) : regularFeedbacks.length === 0 ? (
-              <div className="bg-white rounded-xl shadow p-8 text-center text-gray-500">
-                フィードバックはまだありません
-              </div>
-            ) : (
-              regularFeedbacks.map((fb) => (
-                <div key={fb.id} className="bg-white rounded-xl shadow p-6">
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3">
-                      <span className="text-2xl font-bold text-blue-600">{fb.rating}</span>
-                      {renderStars(fb.rating)}
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        fb.rating >= 4 ? 'bg-green-100 text-green-800' :
-                        fb.rating >= 3 ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
-                        {fb.rating >= 4 ? '高評価' : fb.rating >= 3 ? '普通' : '低評価'}
-                      </span>
-                    </div>
-                    <div className="text-right text-sm text-gray-500">
-                      <p>{fb.createdAt}</p>
-                      <p className="text-xs">{getChannelLabel(fb.channel)}</p>
-                    </div>
-                  </div>
-
-                  {/* コメント */}
-                  {fb.comment && (
-                    <div className="bg-gray-50 p-4 rounded-lg mb-4">
-                      <p className="text-gray-800 whitespace-pre-wrap">{fb.comment}</p>
-                    </div>
-                  )}
-
-                  {/* 詳細情報 */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                    {fb.orderId && (
-                      <div className="bg-blue-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">注文ID</p>
-                        <p className="font-medium text-blue-800 truncate">{fb.orderId}</p>
-                      </div>
-                    )}
-                    {/* チャネル別質問の回答表示 */}
-                    {fb.orderingExperience && (
-                      <div className="bg-indigo-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">注文体験</p>
-                        <p className="font-medium text-indigo-800">{getChannelQuestionLabel('order_received', 'orderingExperience', fb.orderingExperience)}</p>
-                      </div>
-                    )}
-                    {fb.completionTimePerception && (
-                      <div className="bg-cyan-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">完成時間</p>
-                        <p className="font-medium text-cyan-800">{getChannelQuestionLabel('preview_email', 'completionTimePerception', fb.completionTimePerception)}</p>
-                      </div>
-                    )}
-                    {fb.recipientType && (
-                      <div className="bg-pink-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">贈り先</p>
-                        <p className="font-medium text-pink-800">{getChannelQuestionLabel('order_confirm', 'recipientType', fb.recipientType)}</p>
-                      </div>
-                    )}
-                    {fb.reorderIntent && (
-                      <div className="bg-green-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">再購入意向</p>
-                        <p className="font-medium text-green-800">{getReorderIntentLabel(fb.reorderIntent)}</p>
-                      </div>
-                    )}
-                    {fb.pricePerception && (
-                      <div className="bg-yellow-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">価格感</p>
-                        <p className="font-medium text-yellow-800">{getPricePerceptionLabel(fb.pricePerception)}</p>
-                      </div>
-                    )}
-                    {fb.barrierReason && (
-                      <div className="bg-orange-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">購入障壁</p>
-                        <p className="font-medium text-orange-800">{getBarrierLabel(fb.barrierReason)}</p>
-                      </div>
-                    )}
-                    {fb.variant && (
-                      <div className="bg-purple-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">A/Bバリアント</p>
-                        <p className="font-medium text-purple-800">{fb.variant}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* visitorId (縮小表示) */}
-                  <div className="mt-3 text-xs text-gray-400">
-                    Visitor: {fb.visitorId?.slice(0, 8)}...
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-
-        {/* お問い合わせ一覧 */}
-        {activeTab === 'inquiries' && (
-          <div className="space-y-4">
-            {feedbackLoading ? (
-              <div className="text-center py-10">お問い合わせを読み込んでいます...</div>
-            ) : inquiries.length === 0 ? (
-              <div className="bg-white rounded-xl shadow p-8 text-center text-gray-500">
-                お問い合わせはまだありません
-              </div>
-            ) : (
-              inquiries.map((inq) => (
-                <div
-                  key={inq.id}
-                  className={`rounded-xl shadow p-6 ${
-                    inq.handled
-                      ? 'bg-gray-100 border border-gray-300 opacity-70'
-                      : inq.refundRequested
-                        ? 'bg-red-50 border-2 border-red-300'
-                        : 'bg-white'
-                  }`}
-                >
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      {inq.handled && (
-                        <span className="px-3 py-1 bg-green-500 text-white text-sm font-bold rounded">
-                          対応済み
-                        </span>
-                      )}
-                      {inq.refundRequested ? (
-                        <span className={`px-3 py-1 text-sm font-bold rounded ${
-                          inq.handled ? 'bg-red-300 text-red-800' : 'bg-red-500 text-white'
-                        }`}>
-                          返金希望
-                        </span>
-                      ) : (
-                        <span className="px-3 py-1 bg-gray-200 text-gray-700 text-sm font-medium rounded">
-                          一般問い合わせ
-                        </span>
-                      )}
-                      {inq.rating && (
-                        <>
-                          <span className="text-2xl font-bold text-blue-600">{inq.rating}</span>
-                          {renderStars(inq.rating)}
-                        </>
-                      )}
-                    </div>
-                    <div className="text-right text-sm text-gray-500">
-                      <p className={inq.refundRequested && !inq.handled ? 'text-red-600 font-bold' : ''}>{inq.createdAt}</p>
-                    </div>
-                  </div>
-
-                  {/* 注文者名 */}
-                  {inq.orderId && getOrderByOrderId(inq.orderId) && (
-                    <div className="mb-3 pb-3 border-b border-gray-200">
-                      <p className="text-lg font-bold text-gray-800">
-                        {getOrderByOrderId(inq.orderId).targetName} 様
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        注文ID: {inq.orderId}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* コメント */}
-                  {inq.comment && (
-                    <div className={`p-4 rounded-lg mb-4 ${inq.refundRequested ? 'bg-white' : 'bg-gray-50'}`}>
-                      <p className={`whitespace-pre-wrap ${inq.refundRequested ? 'text-red-800' : 'text-gray-800'}`}>
-                        {inq.comment}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* 詳細情報 */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                    {inq.dissatisfactionReason && (
-                      <div className="bg-red-100 p-2 rounded">
-                        <p className="text-xs text-gray-500">不満理由</p>
-                        <p className="font-medium text-red-800">{getDissatisfactionLabel(inq.dissatisfactionReason)}</p>
-                      </div>
-                    )}
-                    {inq.variant && (
-                      <div className="bg-purple-50 p-2 rounded">
-                        <p className="text-xs text-gray-500">A/Bバリアント</p>
-                        <p className="font-medium text-purple-800">{inq.variant}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* visitorId (縮小表示) */}
-                  <div className="mt-3 flex justify-between items-center">
-                    <span className="text-xs text-gray-400">
-                      Visitor: {inq.visitorId?.slice(0, 8)}...
-                    </span>
-                    {!inq.handled && (
-                      <button
-                        onClick={() => handleMarkAsHandled(inq.id)}
-                        className="text-sm bg-green-500 text-white px-4 py-1.5 rounded hover:bg-green-600 transition-colors"
-                      >
-                        対応済みにする
-                      </button>
-                    )}
-                    {inq.handled && inq.handledAt && (
-                      <span className="text-xs text-gray-500">
-                        対応日時: {inq.handledAt.toDate ? inq.handledAt.toDate().toLocaleString('ja-JP') : new Date(inq.handledAt).toLocaleString('ja-JP')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
+        <h1 className="text-3xl font-bold text-gray-800 mb-6">バースデーソングメーカー 管理画面</h1>
 
         {/* 注文一覧 */}
-        {activeTab === 'orders' && (
         <div className="space-y-6">
           {orders.map((order) => (
             <div key={order.id} className="bg-white rounded-xl shadow p-6">
@@ -964,16 +568,28 @@ const AdminPage = ({ user }) => {
                       <p className="font-bold mb-1">歌詞:</p>
                       <textarea
                         readOnly
-                        className="w-full h-40 border mb-2 p-2 text-sm bg-gray-100"
+                        className="w-full h-80 border mb-2 p-2 text-sm bg-gray-100"
                         value={order.generatedLyrics}
                       />
-                      <p className="font-bold mb-1">スタイル:</p>
-                      <textarea
-                        readOnly
-                        className="w-full h-24 border mb-2 p-2 text-sm bg-gray-100"
-                        value={order.generatedPrompt}
-                      />
-                      <p className="text-green-600 text-xs">✅ 自動生成済み</p>
+                      <p className="text-green-600 text-xs mb-3">✅ 自動生成済み</p>
+
+                      {/* 楽曲生成ボタン（プロンプト完了後、楽曲未生成の場合に表示） */}
+                      {!order.generatedSongs && order.status !== 'generating_song' && (
+                        <button
+                          onClick={() => handleGenerateSong(order)}
+                          className="w-full bg-purple-600 text-white py-2 px-4 rounded hover:bg-purple-700 transition-colors font-bold"
+                        >
+                          🎵 楽曲を生成する
+                        </button>
+                      )}
+                      {order.status === 'generating_song' && (
+                        <div className="text-center py-2 text-purple-600 font-bold animate-pulse">
+                          🎵 楽曲生成中...
+                        </div>
+                      )}
+                      {order.generatedSongs && order.generatedSongs.length > 0 && (
+                        <p className="text-green-600 text-xs">✅ 楽曲生成済み</p>
+                      )}
                     </div>
                   ) : (
                     <div className="text-center py-4 text-gray-500 text-sm">
@@ -987,7 +603,7 @@ const AdminPage = ({ user }) => {
                 </div>
 
                 <div className="bg-gray-50 p-4 rounded border">
-                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲（自動生成）</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">2. 楽曲</h4>
 
                   {/* 生成中 */}
                   {order.status === 'generating_song' ? (
@@ -1002,32 +618,40 @@ const AdminPage = ({ user }) => {
                       <p className="text-xs text-red-600 mb-2">
                         {order.sunoErrorMessage || (order.status === 'song_timeout' ? '生成に4分以上かかりました' : 'エラーが発生しました')}
                       </p>
-                      <p className="text-xs text-gray-600">自動リトライ待ち、または管理者対応が必要です</p>
+                      <p className="text-xs text-gray-600">再度楽曲生成ボタンを押してください</p>
                     </div>
-                  ) : order.status === 'previews_ready' || order.status === 'song_selected' ? (
-                    <div className="text-green-600 text-sm mb-2">✅ 楽曲生成完了・顧客選択待ち</div>
+                  ) : order.status === 'song_generated' || order.status === 'song_selected' ? (
+                    <div className="text-green-600 text-sm mb-2">
+                      ✅ 楽曲生成完了
+                      {order.selectedSongUrl && ' ・選曲済み'}
+                    </div>
+                  ) : !order.generatedLyrics ? (
+                    <div className="text-center py-4 text-gray-500 text-sm">
+                      <span>プロンプト生成待ち</span>
+                    </div>
                   ) : (
                     <div className="text-center py-4 text-gray-500 text-sm">
-                      {order.currentStep === 'song' ? (
-                        <span className="text-blue-600 animate-pulse">生成待機中...</span>
-                      ) : (
-                        <span>前ステップ完了待ち</span>
-                      )}
+                      <span>楽曲生成ボタンを押してください</span>
                     </div>
                   )}
 
-                  {/* 生成済み楽曲リスト（閲覧のみ） */}
+                  {/* 生成済み楽曲リスト + 管理者選曲 */}
                   {order.generatedSongs && order.generatedSongs.length > 0 && (
                     <div className="space-y-3 mt-2">
                       {order.generatedSongs.map((song, idx) => (
-                        <div key={idx} className={`p-2 border rounded ${order.selectedSongIndex === idx ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
+                        <div key={idx} className={`p-2 border rounded ${order.selectedSongUrl === song.audio_url ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
                           <p className="text-xs font-bold mb-1">
                             曲 {idx + 1}
-                            {order.selectedSongIndex === idx && <span className="ml-2 text-green-700">（顧客選択）</span>}
+                            {order.selectedSongUrl === song.audio_url && <span className="ml-2 text-green-700">（選択中）</span>}
                           </p>
                           <audio controls src={song.audio_url} className="w-full h-8 mb-2" />
-                          {song.previewReady && (
-                            <p className="text-xs text-green-600">プレビュー生成済み</p>
+                          {order.selectedSongUrl !== song.audio_url && (
+                            <button
+                              onClick={() => handleSelectSong(order, song.audio_url)}
+                              className="w-full bg-green-500 text-white text-xs py-1 px-2 rounded hover:bg-green-600"
+                            >
+                              この曲を選択
+                            </button>
                           )}
                         </div>
                       ))}
@@ -1075,25 +699,6 @@ const AdminPage = ({ user }) => {
                     </div>
                   )}
 
-                  {/* プレビュー音声確認 */}
-                  {order.previewAudioPath && (
-                    <div className="mt-3 bg-white p-3 rounded border">
-                      <p className="text-xs font-bold text-gray-700 mb-2">プレビュー音声（15秒）</p>
-                      <button
-                        onClick={() => handleGetAdminPreviewUrl(order.id)}
-                        className="bg-blue-500 text-white text-xs px-3 py-1 rounded hover:bg-blue-600 mb-2 w-full"
-                      >
-                        署名URL取得して再生 🔊
-                      </button>
-                      {adminSignedUrls[`preview_${order.id}`] && (
-                        <div>
-                          <audio controls src={adminSignedUrls[`preview_${order.id}`]} className="w-full mb-1" />
-                          <p className="text-xs text-gray-500">※ URL有効期限: 20分</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
                   {/* フル動画確認 */}
                   {order.fullVideoPath && (
                     <div className="mt-3 bg-white p-3 rounded border">
@@ -1128,37 +733,6 @@ const AdminPage = ({ user }) => {
 
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-semibold mb-3">4. メール管理</h4>
-
-                  {/* プレビュー案内メール */}
-                  <div className="mb-4 p-3 bg-blue-50 rounded">
-                    <p className="font-medium mb-2 text-sm">📧 プレビュー案内メール</p>
-                    {order.previewEmailStatus === 'sent' ? (
-                      <div>
-                        <p className="text-xs text-green-600 mb-2">
-                          ✅ 送信済み
-                          {order.previewEmailSentAt && (
-                            <span className="text-gray-500 ml-1">
-                              ({order.previewEmailSentAt.toDate ? order.previewEmailSentAt.toDate().toLocaleString('ja-JP') : new Date(order.previewEmailSentAt).toLocaleString('ja-JP')})
-                            </span>
-                          )}
-                        </p>
-                        <button
-                          onClick={() => handleResendPreviewEmail(order)}
-                          className="text-sm bg-blue-500 text-white px-3 py-2 rounded w-full"
-                        >
-                          再送する 📨
-                        </button>
-                      </div>
-                    ) : order.previewAudioPath ? (
-                      <p className="text-xs text-yellow-600">
-                        ⏳ 動画生成完了時に自動送信されます
-                      </p>
-                    ) : (
-                      <p className="text-xs text-gray-500">
-                        ※ 動画生成後に自動送信されます
-                      </p>
-                    )}
-                  </div>
 
                   {/* MP4納品メール */}
                   <div className="p-3 bg-green-50 rounded">
@@ -1232,7 +806,6 @@ const AdminPage = ({ user }) => {
             </div>
           ))}
         </div>
-        )}
       </div>
     </div>
   );
