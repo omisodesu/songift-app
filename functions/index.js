@@ -131,7 +131,7 @@ function resolveEmailDestination(appEnv, stgOverrideTo, originalTo, originalSubj
  */
 exports.createOrder = onRequest({
   cors: true,
-  secrets: ["SLACK_WEBHOOK_URL", "APP_ENV"],
+  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -204,6 +204,44 @@ exports.createOrder = onRequest({
 
     // 環境変数取得
     const appEnv = process.env.APP_ENV || "prod";
+    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
+
+    // B2C（simple/pro）のみ注文確認メールを送信
+    if (plan !== "nursingHome") {
+      const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+      const orderUrl = `${frontendBaseUrl}/o/${orderId}?t=${token}`;
+
+      const emailBody = `${email}様のバースデーソング作成を承りました。
+
+以下のURLから進捗状況を確認できます：
+${orderUrl}
+
+※このURLは30日間有効です。
+※完成次第、こちらのメールアドレスにお知らせします。
+
+---
+Songift - 世界に一つのバースデーソング`;
+
+      const sendgridApiKey = process.env.SENDGRID_API_KEY;
+      if (sendgridApiKey) {
+        sgMail.setApiKey(sendgridApiKey.trim());
+        const originalSubject = `【Songift】ご注文を受け付けました - ${email}様`;
+        const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, email, originalSubject);
+
+        if (!emailDestination.shouldSkip) {
+          await sgMail.send({
+            to: emailDestination.to,
+            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+            subject: emailDestination.subject,
+            text: emailBody,
+            html: emailBody.replace(/\n/g, "<br>"),
+          });
+          console.log(`Confirmation email sent to: ${emailDestination.to} (env: ${appEnv})`);
+        } else {
+          console.log(`[STG] Email sending skipped`);
+        }
+      }
+    }
 
     // Slack通知送信（PROD環境のみ）
     if (appEnv === "prod") {
@@ -843,7 +881,7 @@ exports.generateVideoAssets = onCall({
 
     console.log(`[generateVideoAssets] Full video completed: ${fullVideoPath}, subtitleMode: ${subtitleMode}`);
 
-    // 7. プレビュー案内メールを自動送信（フル動画完成後に送信）
+    // 7. メール送信
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
     const sendgridApiKey = process.env.SENDGRID_API_KEY;
@@ -853,14 +891,17 @@ exports.generateVideoAssets = onCall({
 
       // 最新のorderデータを再取得
       const updatedOrder = (await orderDoc.ref.get()).data();
-      const planName = updatedOrder.plan === "simple" ? "魔法診断" : "プロ";
-      const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-      const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${updatedOrder.accessToken}`;
 
-      // フィードバックURL生成
-      const feedbackUrl = `${frontendBaseUrl}/feedback?ch=preview_email&oid=${orderId}`;
+      if (updatedOrder.plan === "nursingHome") {
+        // B2B（nursingHome）: メール送信なし（管理者が直接対応）
+        console.log(`[generateVideoAssets] Skipping email for nursingHome order ${orderId}`);
+      } else {
+        // B2C（simple/pro）: プレビュー案内メールを送信（MP4納品は支払い後にprocessVideoStep経由で送信）
+        const planName = updatedOrder.plan === "simple" ? "魔法診断" : "プロ";
+        const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
+        const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${updatedOrder.accessToken}`;
 
-      const previewEmailBody = `${updatedOrder.userEmail} 様
+        const previewEmailBody = `${updatedOrder.userEmail} 様
 
 この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
 
@@ -873,35 +914,31 @@ ${previewUrl}
 お支払い確認後、フル動画（MP4）をメールでお届けします。
 
 ---
-
-ご感想をお聞かせください：
-${feedbackUrl}
-
----
 Songift運営チーム`;
 
-      const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${updatedOrder.userEmail}様`;
-      const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, updatedOrder.userEmail, originalSubject);
+        const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${updatedOrder.userEmail}様`;
+        const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, updatedOrder.userEmail, originalSubject);
 
-      if (!emailDestination.shouldSkip) {
-        const msg = {
-          to: emailDestination.to,
-          from: {email: "fukui@gadandan.co.jp", name: "Songift"},
-          subject: emailDestination.subject,
-          text: previewEmailBody,
-          html: previewEmailBody.replace(/\n/g, "<br>"),
-        };
-        await sgMail.send(msg);
-        console.log(`[generateVideoAssets] Preview email sent to ${emailDestination.to}`);
+        if (!emailDestination.shouldSkip) {
+          const msg = {
+            to: emailDestination.to,
+            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
+            subject: emailDestination.subject,
+            text: previewEmailBody,
+            html: previewEmailBody.replace(/\n/g, "<br>"),
+          };
+          await sgMail.send(msg);
+          console.log(`[generateVideoAssets] Preview email sent to ${emailDestination.to}`);
+        }
+
+        // プレビューメール送信ステータス更新
+        await orderDoc.ref.update({
+          previewEmailStatus: "sent",
+          previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
       }
-
-      // プレビューメール送信ステータス更新
-      await orderDoc.ref.update({
-        previewEmailStatus: "sent",
-        previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
     } else {
-      console.warn("[generateVideoAssets] SENDGRID_API_KEY not configured, skipping preview email");
+      console.warn("[generateVideoAssets] SENDGRID_API_KEY not configured, skipping email");
     }
 
     console.log(`[generateVideoAssets] Completed for order: ${orderId}`);
@@ -2647,6 +2684,8 @@ exports.onOrderCreated = onDocumentCreated({
 exports.processAutomationQueue = onSchedule({
   schedule: "every 1 minutes",
   timeZone: "Asia/Tokyo",
+  memory: "1GiB",
+  timeoutSeconds: 540,
   secrets: ["GEMINI_API_KEY", "SUNO_API_KEY", "VIDEO_GENERATOR_URL", "SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (event) => {
   const db = admin.firestore();
@@ -2754,19 +2793,24 @@ async function processPromptStep(orderRef, order, orderId) {
   const cleanJsonText = generatedText.replace(/```json/g, "").replace(/```/g, "").trim();
   const parsedResult = JSON.parse(cleanJsonText);
 
-  // Firestore更新（楽曲生成は手動で行うため、ここで停止）
+  // Firestore更新
   await orderRef.update({
     generatedLyrics: parsedResult.lyrics,
     generatedPrompt: parsedResult.sunoPrompt,
     promptGeneratedAt: admin.firestore.FieldValue.serverTimestamp(),
     status: "prompt_ready",
-    currentStep: null,
-    automationStatus: "paused",
+    currentStep: order.plan === "nursingHome" ? null : "song",
+    automationStatus: order.plan === "nursingHome" ? "paused" : "running",
   });
 
-  // 楽曲生成は手動で行うため、自動キュー追加はしない
-
-  console.log(`[processPromptStep] Completed for order ${orderId} - waiting for manual song generation`);
+  if (order.plan === "nursingHome") {
+    // B2B（介護施設向け）: 楽曲生成は手動で行うため、ここで停止
+    console.log(`[processPromptStep] Completed for order ${orderId} - waiting for manual song generation`);
+  } else {
+    // B2C（simple/pro）: 自動で楽曲生成ステップに進む
+    await scheduleNextStep(orderId, "song");
+    console.log(`[processPromptStep] Completed for order ${orderId} - proceeding to song generation`);
+  }
 }
 
 /**
@@ -2831,12 +2875,15 @@ async function processSongStep(orderRef, order, orderId) {
 }
 
 /**
- * プレビュー生成ステップ（2曲分）- 廃止
- * 管理者が選曲するフローに変更したため、プレビュー生成は不要
+ * プレビュー生成ステップ（2曲分）
+ * B2B（nursingHome）: 廃止（管理者が選曲）
+ * B2C（simple/pro）: 自動生成
  */
 async function processPreviewStep(orderRef, order, orderId) {
-  console.log(`[processPreviewStep] DEPRECATED - skipping for order ${orderId}`);
-  return; // プレビュー生成は廃止
+  if (order.plan === "nursingHome") {
+    console.log(`[processPreviewStep] Skipping for nursingHome order ${orderId}`);
+    return;
+  }
 
   const videoGeneratorUrl = process.env.VIDEO_GENERATOR_URL;
   if (!videoGeneratorUrl) {
@@ -2883,12 +2930,15 @@ async function processPreviewStep(orderRef, order, orderId) {
 }
 
 /**
- * プレビュー完成メール送信ステップ - 廃止
- * 管理者が選曲するフローに変更したため、プレビューメールは不要
+ * プレビュー完成メール送信ステップ
+ * B2B（nursingHome）: 廃止（管理者が対応）
+ * B2C（simple/pro）: 自動送信
  */
 async function processEmailStep(orderRef, order, orderId) {
-  console.log(`[processEmailStep] DEPRECATED - skipping for order ${orderId}`);
-  return; // プレビューメール送信は廃止
+  if (order.plan === "nursingHome") {
+    console.log(`[processEmailStep] Skipping for nursingHome order ${orderId}`);
+    return;
+  }
 
   const sendgridApiKey = process.env.SENDGRID_API_KEY;
   if (!sendgridApiKey) {
@@ -3201,17 +3251,30 @@ exports.checkSunoStatusScheduled = onSchedule({
             duration: song.duration,
           }));
 
-          await orderDoc.ref.update({
-            status: "song_generated",
-            sunoStatus: "SUCCESS",
-            generatedSongs: songs,
-            currentStep: null,
-            automationStatus: "paused",
-          });
+          const orderData = orderDoc.data();
 
-          // プレビュー生成は廃止、管理者が選曲後に動画生成へ進む
-
-          console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - waiting for admin selection`);
+          if (orderData.plan === "nursingHome") {
+            // B2B: 管理者が選曲後に動画生成へ進む
+            await orderDoc.ref.update({
+              status: "song_generated",
+              sunoStatus: "SUCCESS",
+              generatedSongs: songs,
+              currentStep: null,
+              automationStatus: "paused",
+            });
+            console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - waiting for admin selection`);
+          } else {
+            // B2C: 自動でプレビュー生成ステップへ進む
+            await orderDoc.ref.update({
+              status: "song_generated",
+              sunoStatus: "SUCCESS",
+              generatedSongs: songs,
+              currentStep: "preview",
+              automationStatus: "running",
+            });
+            await scheduleNextStep(orderId, "preview");
+            console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - proceeding to preview`);
+          }
         }
       }
     } catch (error) {
