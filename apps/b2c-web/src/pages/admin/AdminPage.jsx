@@ -18,6 +18,7 @@ const AdminPage = ({ user }) => {
 
   // タブ管理
   const [activeTab, setActiveTab] = useState('orders');
+  const [orderFilter, setOrderFilter] = useState('all'); // 'all' | 'b2b' | 'b2c'
 
   // フィードバック一覧
   const [feedbacks, setFeedbacks] = useState([]);
@@ -146,8 +147,10 @@ const AdminPage = ({ user }) => {
             duration: song.duration
           }));
 
+          // generatedSongsのみ更新（UI表示用）
+          // status変更はcheckSunoStatusScheduled（サーバー側）に任せる
+          // （クライアントがstatusを変更するとサーバー側のscheduleNextStepが呼ばれない）
           await updateDoc(doc(db, "orders", order.id), {
-            status: "song_generated",
             sunoStatus: "SUCCESS",
             generatedSongs: songs,
             songLastPolledAt: serverTimestamp()
@@ -616,6 +619,14 @@ const AdminPage = ({ user }) => {
     );
   };
 
+  const b2bCount = orders.filter(o => o.plan === 'nursingHome').length;
+  const b2cCount = orders.filter(o => o.plan !== 'nursingHome').length;
+  const filteredOrders = orders.filter(order => {
+    if (orderFilter === 'b2b') return order.plan === 'nursingHome';
+    if (orderFilter === 'b2c') return order.plan !== 'nursingHome';
+    return true;
+  });
+
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
   return (
@@ -877,15 +888,40 @@ const AdminPage = ({ user }) => {
 
         {/* 注文一覧 */}
         {activeTab === 'orders' && (
-        <div className="space-y-6">
-          {orders.map((order) => (
+        <div>
+          {/* B2B/B2Cフィルタ */}
+          <div className="flex gap-2 mb-4">
+            {[
+              { key: 'all', label: `すべて (${orders.length})` },
+              { key: 'b2b', label: `B2B 介護施設 (${b2bCount})` },
+              { key: 'b2c', label: `B2C (${b2cCount})` },
+            ].map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setOrderFilter(tab.key)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  orderFilter === tab.key
+                    ? 'bg-gray-800 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-6">
+          {filteredOrders.map((order) => (
             <div key={order.id} className="bg-white rounded-xl shadow p-6">
               {/* ヘッダー情報 */}
               <div className="flex justify-between items-start border-b pb-4 mb-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' : 'bg-pink-100 text-pink-800'}`}>
-                      {order.plan === 'simple' ? '魔法診断' : 'プロ'}
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      order.plan === 'nursingHome' ? 'bg-green-100 text-green-800' :
+                      order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' :
+                      'bg-pink-100 text-pink-800'
+                    }`}>
+                      {order.plan === 'nursingHome' ? '介護施設' : order.plan === 'simple' ? '魔法診断' : 'プロ'}
                     </span>
                     <span className="text-sm text-gray-500">{order.createdAt}</span>
                     <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -1231,6 +1267,7 @@ const AdminPage = ({ user }) => {
               </div>
             </div>
           ))}
+        </div>
         </div>
         )}
       </div>

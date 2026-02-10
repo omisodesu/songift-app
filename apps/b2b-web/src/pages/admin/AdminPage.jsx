@@ -4,8 +4,8 @@ import {
   collection, query, orderBy, doc, updateDoc, onSnapshot, serverTimestamp
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, functions } from '../../lib/firebase';
-import { getBackgroundTemplate } from '../../lib/backgroundTemplates';
+import { ref, uploadBytes } from "firebase/storage";
+import { db, functions, storage } from '../../lib/firebase';
 import { buildSimpleModePrompt } from '../../lib/prompts/simpleMode';
 import { buildProModePrompt } from '../../lib/prompts/proMode';
 
@@ -14,6 +14,7 @@ const AdminPage = ({ user }) => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [orderFilter, setOrderFilter] = useState('all'); // 'all' | 'b2b' | 'b2c'
 
   // 編集機能用の状態管理
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -22,6 +23,11 @@ const AdminPage = ({ user }) => {
 
   // 管理者向け署名URL管理
   const [adminSignedUrls, setAdminSignedUrls] = useState({});
+
+  // 写真アップロード管理
+  const [orderPhotos, setOrderPhotos] = useState({});         // { orderId: File[] }
+  const [photoPreviews, setPhotoPreviews] = useState({});      // { orderId: string[] }
+  const [photoDisclaimer, setPhotoDisclaimer] = useState({});   // { orderId: boolean }
 
   // APIの設定 (修正: sunoapi.orgのBase URL)
   const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
@@ -368,35 +374,129 @@ const AdminPage = ({ user }) => {
     }
   };
 
-  // Phase1: 動画アセット生成
+  // 写真アップロード: バリデーション定数
+  const MAX_PHOTOS = 5;
+  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+  const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+  // 写真アップロード: ファイル選択ハンドラー
+  const handlePhotoSelect = (orderId, files) => {
+    const fileArray = Array.from(files);
+    const existing = orderPhotos[orderId] || [];
+
+    if (existing.length + fileArray.length > MAX_PHOTOS) {
+      alert(`写真は最大${MAX_PHOTOS}枚までです`);
+      return;
+    }
+
+    for (const file of fileArray) {
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        alert(`対応形式: JPEG, PNG, WebP\n${file.name} は対応していません`);
+        return;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`ファイルサイズは5MB以内にしてください\n${file.name}: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+        return;
+      }
+    }
+
+    const newPhotos = [...existing, ...fileArray];
+    setOrderPhotos(prev => ({ ...prev, [orderId]: newPhotos }));
+    setPhotoPreviews(prev => ({
+      ...prev,
+      [orderId]: newPhotos.map(f => URL.createObjectURL(f)),
+    }));
+  };
+
+  // 写真アップロード: 削除ハンドラー
+  const handlePhotoRemove = (orderId, index) => {
+    const photos = [...(orderPhotos[orderId] || [])];
+    photos.splice(index, 1);
+    setOrderPhotos(prev => ({ ...prev, [orderId]: photos }));
+    setPhotoPreviews(prev => ({
+      ...prev,
+      [orderId]: photos.map(f => URL.createObjectURL(f)),
+    }));
+  };
+
+  // 写真アップロード: 順序変更ハンドラー
+  const handlePhotoReorder = (orderId, fromIndex, toIndex) => {
+    const photos = [...(orderPhotos[orderId] || [])];
+    const [moved] = photos.splice(fromIndex, 1);
+    photos.splice(toIndex, 0, moved);
+    setOrderPhotos(prev => ({ ...prev, [orderId]: photos }));
+    setPhotoPreviews(prev => ({
+      ...prev,
+      [orderId]: photos.map(f => URL.createObjectURL(f)),
+    }));
+  };
+
+  // 写真アップロード: Storageへアップロード
+  const uploadPhotosToStorage = async (orderId) => {
+    const photos = orderPhotos[orderId] || [];
+    if (photos.length === 0) return [];
+
+    const paths = [];
+    for (let i = 0; i < photos.length; i++) {
+      const file = photos[i];
+      const ext = file.name.split('.').pop().toLowerCase();
+      const storagePath = `photos/${orderId}/temp_${i}.${ext}`;
+      const storageRef = ref(storage, storagePath);
+      await uploadBytes(storageRef, file, {
+        contentType: file.type,
+        customMetadata: { orderId, index: String(i), temporary: 'true' },
+      });
+      paths.push(storagePath);
+    }
+    return paths;
+  };
+
+  // Phase1: 動画アセット生成（写真スライドショー対応）
   const handleGenerateVideos = async (order) => {
     if (!order.selectedSongUrl) {
       alert("先に楽曲を選定してください");
       return;
     }
 
-    if (!confirm(`${order.targetName}様の動画アセットを生成しますか？\n\n- プレビュー音声（15秒）\n- フル動画（縦型1080x1920）\n\n※ 2-3分かかります`)) {
+    const photos = orderPhotos[order.id] || [];
+    if (photos.length === 0) {
+      alert("写真を1枚以上アップロードしてください");
+      return;
+    }
+
+    if (!photoDisclaimer[order.id]) {
+      alert("写真の利用許諾にチェックを入れてください");
+      return;
+    }
+
+    if (!confirm(`${order.targetName}様の動画アセットを生成しますか？\n\n- 写真${photos.length}枚のスライドショー\n- フル動画（縦型1080x1920）\n\n※ 2-3分かかります`)) {
       return;
     }
 
     try {
-      // ステータスを processing に更新
+      // 1. 写真をStorageにアップロード
+      const photoPaths = await uploadPhotosToStorage(order.id);
+
+      // 2. Firestoreに写真パスを保存 + ステータス更新
       await updateDoc(doc(db, "orders", order.id), {
+        photoPaths: photoPaths,
+        photoCount: photoPaths.length,
+        photoDisclaimerAccepted: true,
+        photoDisclaimerAcceptedAt: serverTimestamp(),
         videoGenerationStatus: "processing",
       });
 
-      // Callable Function 呼び出し
+      // 3. Callable Function 呼び出し
       const generateVideoAssets = httpsCallable(functions, "generateVideoAssets");
       await generateVideoAssets({ orderId: order.id });
 
-      alert("✅ 動画アセット生成が完了しました！");
+      alert("動画アセット生成が完了しました！");
     } catch (error) {
       console.error("動画生成エラー:", error);
-      // deadline-exceededの場合はバックグラウンドで処理中
       if (error.message?.includes("deadline") || error.code === "deadline-exceeded") {
-        alert("⏳ 処理に時間がかかっています。\n\nバックグラウンドで動画生成を継続中です。\nしばらくお待ちください（画面は自動更新されます）");
+        alert("処理に時間がかかっています。\n\nバックグラウンドで動画生成を継続中です。\nしばらくお待ちください（画面は自動更新されます）");
       } else {
-        alert("❌ 動画生成に失敗しました。\n\nエラー: " + error.message);
+        alert("動画生成に失敗しました。\n\nエラー: " + error.message);
       }
     }
   };
@@ -473,6 +573,14 @@ const AdminPage = ({ user }) => {
   };
 
 
+  const b2bCount = orders.filter(o => o.plan === 'nursingHome').length;
+  const b2cCount = orders.filter(o => o.plan !== 'nursingHome').length;
+  const filteredOrders = orders.filter(order => {
+    if (orderFilter === 'b2b') return order.plan === 'nursingHome';
+    if (orderFilter === 'b2c') return order.plan !== 'nursingHome';
+    return true;
+  });
+
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
   return (
@@ -480,16 +588,41 @@ const AdminPage = ({ user }) => {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-3xl font-bold text-gray-800 mb-6">バースデーソングメーカー 管理画面</h1>
 
+        {/* フィルタボタン */}
+        <div className="flex gap-2 mb-6">
+          {[
+            { key: 'all', label: `すべて (${orders.length})` },
+            { key: 'b2b', label: `B2B 介護施設 (${b2bCount})` },
+            { key: 'b2c', label: `B2C (${b2cCount})` },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setOrderFilter(tab.key)}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                orderFilter === tab.key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         {/* 注文一覧 */}
         <div className="space-y-6">
-          {orders.map((order) => (
+          {filteredOrders.map((order) => (
             <div key={order.id} className="bg-white rounded-xl shadow p-6">
               {/* ヘッダー情報 */}
               <div className="flex justify-between items-start border-b pb-4 mb-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' : 'bg-pink-100 text-pink-800'}`}>
-                      {order.plan === 'simple' ? '魔法診断' : 'プロ'}
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      order.plan === 'nursingHome' ? 'bg-green-100 text-green-800' :
+                      order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' :
+                      'bg-pink-100 text-pink-800'
+                    }`}>
+                      {order.plan === 'nursingHome' ? '介護施設' : order.plan === 'simple' ? '魔法診断' : 'プロ'}
                     </span>
                     <span className="text-sm text-gray-500">{order.createdAt}</span>
                     <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -660,23 +793,75 @@ const AdminPage = ({ user }) => {
                 </div>
 
                 <div className="bg-blue-50 p-4 rounded border border-blue-200">
-                  <h4 className="font-bold text-gray-700 mb-2">3. 動画（支払後自動生成）</h4>
+                  <h4 className="font-bold text-gray-700 mb-2">3. 動画生成</h4>
 
-                  {/* 背景テンプレート表示 */}
-                  {(() => {
-                    const template = getBackgroundTemplate(order.backgroundTemplateId || 't1');
-                    return (
-                      <div className="flex items-center gap-2 mb-3 p-2 bg-white rounded border">
-                        <div className={`w-6 h-9 rounded ${template.previewClass}`}></div>
-                        <span className="text-sm text-gray-700">
-                          背景: <span className="font-medium">{template.name}</span>
-                        </span>
+                  {/* 写真アップロードセクション */}
+                  <div className="mb-3">
+                    <p className="text-sm font-bold text-gray-700 mb-2">写真アップロード（1-5枚）</p>
+
+                    {/* サムネイルプレビュー */}
+                    {(photoPreviews[order.id] || []).length > 0 && (
+                      <div className="flex gap-2 flex-wrap mb-2">
+                        {(photoPreviews[order.id] || []).map((preview, idx) => (
+                          <div key={idx} className="relative w-16 h-28 rounded overflow-hidden border-2 border-gray-300">
+                            <img src={preview} alt={`Photo ${idx + 1}`} className="w-full h-full object-cover" />
+                            <button
+                              onClick={() => handlePhotoRemove(order.id, idx)}
+                              className="absolute top-0 right-0 bg-red-500 text-white text-xs w-4 h-4 rounded-full leading-4 text-center"
+                            >x</button>
+                            <span className="absolute bottom-0 left-0 bg-black bg-opacity-50 text-white text-xs px-1">{idx + 1}</span>
+                            {idx > 0 && (
+                              <button
+                                onClick={() => handlePhotoReorder(order.id, idx, idx - 1)}
+                                className="absolute top-0 left-0 bg-blue-500 text-white text-xs w-4 h-4 rounded-full leading-4 text-center"
+                              >&lt;</button>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    );
-                  })()}
+                    )}
+
+                    {/* ファイル選択 */}
+                    {(orderPhotos[order.id] || []).length < MAX_PHOTOS && !order.fullVideoPath && (
+                      <label className="block w-full text-center py-2 px-3 bg-gray-200 rounded cursor-pointer hover:bg-gray-300 text-sm text-gray-700 border-2 border-dashed border-gray-400">
+                        写真を追加 (JPEG/PNG/WebP, 5MB以下)
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          multiple
+                          className="hidden"
+                          onChange={(e) => handlePhotoSelect(order.id, e.target.files)}
+                        />
+                      </label>
+                    )}
+
+                    {/* 免責チェックボックス */}
+                    {(orderPhotos[order.id] || []).length > 0 && !order.fullVideoPath && (
+                      <label className="flex items-start gap-2 mt-2 text-xs text-gray-600 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={photoDisclaimer[order.id] || false}
+                          onChange={(e) => setPhotoDisclaimer(prev => ({ ...prev, [order.id]: e.target.checked }))}
+                          className="mt-0.5"
+                        />
+                        <span>アップロードする写真の利用権限を確認済みであり、肖像権・著作権について利用者が責任を負うことに同意します。</span>
+                      </label>
+                    )}
+                  </div>
+
+                  {/* 動画生成ボタン */}
+                  {order.selectedSongUrl && !order.fullVideoPath && order.videoGenerationStatus !== "processing" && order.status !== 'video_generating' && (
+                    <button
+                      onClick={() => handleGenerateVideos(order)}
+                      disabled={(orderPhotos[order.id] || []).length === 0 || !photoDisclaimer[order.id]}
+                      className="w-full bg-blue-600 text-white text-sm py-2 px-3 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed mb-3"
+                    >
+                      動画を生成する（写真{(orderPhotos[order.id] || []).length}枚）
+                    </button>
+                  )}
 
                   {/* 動画生成状態 */}
-                  {order.status === 'video_generating' && (
+                  {(order.videoGenerationStatus === "processing" || order.status === 'video_generating') && (
                     <div className="text-center py-4 text-blue-600 font-bold animate-pulse mb-2">
                       動画生成中... 自動更新されます
                     </div>
@@ -684,18 +869,13 @@ const AdminPage = ({ user }) => {
 
                   {order.videoGenerationStatus === "completed" && (
                     <div className="text-center py-2 text-green-600 text-sm font-bold mb-2">
-                      ✅ 生成完了
-                      {order.subtitleMode && (
-                        <span className="ml-2 text-xs font-normal">
-                          {order.subtitleMode === "v2" ? "🎵 V2字幕" : "📝 V1字幕"}
-                        </span>
-                      )}
+                      生成完了{order.photoCount ? `（写真${order.photoCount}枚）` : ''}
                     </div>
                   )}
 
-                  {!order.isPaid && order.status !== 'video_generating' && order.status !== 'completed' && (
-                    <div className="text-center py-4 text-gray-500 text-sm">
-                      顧客の支払い後に自動生成されます
+                  {!order.selectedSongUrl && !order.fullVideoPath && (
+                    <div className="text-center py-2 text-gray-500 text-sm">
+                      先に楽曲を選定してください
                     </div>
                   )}
 

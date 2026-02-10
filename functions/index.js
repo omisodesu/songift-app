@@ -854,6 +854,8 @@ exports.generateVideoAssets = onCall({
         // V2 lyrics alignment: Suno timestamped lyrics用
         sunoTaskId: order.sunoTaskId || null,
         selectedSongUrl: order.selectedSongUrl || null,
+        // 写真スライドショー: photoPathsがあればスライドショーモード
+        photoPaths: order.photoPaths || [],
       },
       timeout: 480000, // 8分タイムアウト
     });
@@ -880,6 +882,23 @@ exports.generateVideoAssets = onCall({
     });
 
     console.log(`[generateVideoAssets] Full video completed: ${fullVideoPath}, subtitleMode: ${subtitleMode}`);
+
+    // 6.5. 写真クリーンアップ（スライドショーモードの場合のみ）
+    if (order.photoPaths && order.photoPaths.length > 0) {
+      console.log(`[generateVideoAssets] Cleaning up ${order.photoPaths.length} temporary photos`);
+      for (const photoPath of order.photoPaths) {
+        try {
+          await bucket.file(photoPath).delete();
+          console.log(`[generateVideoAssets] Deleted temp photo: ${photoPath}`);
+        } catch (cleanupErr) {
+          console.warn(`[generateVideoAssets] Failed to delete ${photoPath}: ${cleanupErr.message}`);
+        }
+      }
+      await orderDoc.ref.update({
+        photosCleanedUp: true,
+        photosCleanedUpAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
 
     // 7. メール送信
     const appEnv = process.env.APP_ENV || "prod";
@@ -3042,6 +3061,8 @@ async function processVideoStep(orderRef, order, orderId) {
       lyricsText: order.generatedLyrics || "",
       sunoTaskId: order.sunoTaskId || null,
       selectedSongUrl: order.selectedSongUrl || null,
+      // 写真スライドショー: photoPathsがあればスライドショーモード
+      photoPaths: order.photoPaths || [],
     },
     timeout: 480000,
   });
@@ -3060,6 +3081,23 @@ async function processVideoStep(orderRef, order, orderId) {
     status: "completed",
     currentStep: null,
   });
+
+  // 2.5. 写真クリーンアップ（スライドショーモードの場合のみ）
+  if (order.photoPaths && order.photoPaths.length > 0) {
+    console.log(`[processVideoStep] Cleaning up ${order.photoPaths.length} temporary photos`);
+    const bucket = admin.storage().bucket();
+    for (const photoPath of order.photoPaths) {
+      try {
+        await bucket.file(photoPath).delete();
+      } catch (cleanupErr) {
+        console.warn(`[processVideoStep] Failed to delete ${photoPath}: ${cleanupErr.message}`);
+      }
+    }
+    await orderRef.update({
+      photosCleanedUp: true,
+      photosCleanedUpAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
 
   // 3. MP4納品メール送信
   await sendDeliveryEmail(orderRef, order, orderId, fullVideoPath);

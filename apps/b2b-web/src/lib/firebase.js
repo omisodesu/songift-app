@@ -10,6 +10,7 @@ export {
   googleProvider,
   db,
   functions,
+  storage,
   firebaseConfig,
   COLLECTIONS,
   PROJECT_IDS,

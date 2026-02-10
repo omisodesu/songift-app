@@ -14,6 +14,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getFunctions } from 'firebase/functions';
+import { getStorage } from 'firebase/storage';
 import { PROJECT_IDS, getEnvironmentFromProjectId } from '@songift/shared';
 
 // =============================================================================
@@ -106,6 +107,9 @@ export const db = getFirestore(app);
 
 /** Cloud Functions instance */
 export const functions = getFunctions(app);
+
+/** Firebase Storage instance */
+export const storage = getStorage(app);
 
 // =============================================================================
 // Re-exports for convenience

@@ -581,6 +581,180 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     return `${firstPart}\\N${secondPart}`;
   }
+
+  // ===========================================
+  // 写真スライドショー動画生成
+  // ===========================================
+
+  /**
+   * 写真スライドショー動画を生成（縦型1080x1920）
+   *
+   * @param {object} options
+   * @param {string} options.audioPath - 音声ファイルパス
+   * @param {string} options.outputPath - 出力動画ファイルパス
+   * @param {string[]} options.photoPaths - 写真ファイルパス配列（1-5枚）
+   * @returns {Promise<{outputPath: string, audioDurationSeconds: number, videoDurationSeconds: number}>}
+   */
+  async generateSlideshowVideo({ audioPath, outputPath, photoPaths }) {
+    const audioDuration = await this.getAudioDuration(audioPath);
+    const numPhotos = photoPaths.length;
+
+    console.log(`[Slideshow] Generating slideshow: ${numPhotos} photos, audio: ${audioDuration}s`);
+
+    // 出力ディレクトリ作成
+    const outputDir = path.dirname(outputPath);
+    await fs.mkdir(outputDir, { recursive: true });
+
+    if (numPhotos === 1) {
+      return this._generateFromSinglePhoto(audioPath, outputPath, photoPaths[0], audioDuration);
+    }
+
+    return this._generateFromMultiplePhotos(audioPath, outputPath, photoPaths, audioDuration);
+  }
+
+  /**
+   * 1枚の写真から動画生成（静止画ベース）
+   * @private
+   */
+  async _generateFromSinglePhoto(audioPath, outputPath, photoPath, audioDuration) {
+    return new Promise((resolve, reject) => {
+      console.log(`[Slideshow] Single photo mode: ${photoPath}`);
+
+      ffmpeg()
+        .input(photoPath)
+        .inputOptions(['-loop', '1', '-framerate', '2'])
+        .input(audioPath)
+        .outputOptions([
+          '-c:v', 'libx264',
+          '-crf', '28',
+          '-maxrate', '1500k',
+          '-bufsize', '3000k',
+          '-preset', 'medium',
+          '-tune', 'stillimage',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-movflags', '+faststart',
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1',
+        ])
+        .format('mp4')
+        .on('start', (cmd) => console.log('[Slideshow] FFmpeg command:', cmd))
+        .on('progress', (p) => {
+          if (p.percent) console.log(`[Slideshow] Processing: ${Math.floor(p.percent)}% done`);
+        })
+        .on('end', () => {
+          console.log('[Slideshow] Single photo video completed');
+          resolve({
+            outputPath,
+            audioDurationSeconds: audioDuration,
+            videoDurationSeconds: audioDuration,
+          });
+        })
+        .on('error', (err) => {
+          console.error('[Slideshow] FFmpeg error:', err);
+          reject(new Error(`Slideshow generation failed: ${err.message}`));
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
+   * 複数写真からクロスフェードスライドショー動画生成（2-5枚）
+   * @private
+   */
+  async _generateFromMultiplePhotos(audioPath, outputPath, photoPaths, audioDuration) {
+    return new Promise((resolve, reject) => {
+      const numPhotos = photoPaths.length;
+      const crossfadeDuration = 1.0;
+
+      // 1枚あたりの表示時間を計算
+      // total = N * perPhoto - (N-1) * crossfade = audioDuration
+      // perPhoto = (audioDuration + (N-1) * crossfade) / N
+      const perPhotoDuration = (audioDuration + (numPhotos - 1) * crossfadeDuration) / numPhotos;
+
+      console.log(`[Slideshow] Multi-photo mode: ${numPhotos} photos, ${perPhotoDuration.toFixed(2)}s each, crossfade: ${crossfadeDuration}s`);
+
+      // FFmpeg complex filter graphを構築
+      const filterParts = [];
+
+      // Step 1: 各写真をスケール・クロップして指定秒数の動画ストリームにする
+      const loopFrames = Math.ceil(perPhotoDuration * 30) + 30; // 余裕を持たせる
+      for (let i = 0; i < numPhotos; i++) {
+        filterParts.push(
+          `[${i}:v]loop=loop=${loopFrames}:size=1:start=0,` +
+          `setpts=N/30/TB,` +
+          `scale=1080:1920:force_original_aspect_ratio=increase,` +
+          `crop=1080:1920,` +
+          `setsar=1,` +
+          `trim=duration=${perPhotoDuration.toFixed(3)},` +
+          `setpts=PTS-STARTPTS,` +
+          `format=yuv420p` +
+          `[v${i}]`
+        );
+      }
+
+      // Step 2: xfade で連鎖的にクロスフェード
+      let currentLabel = 'v0';
+      for (let i = 1; i < numPhotos; i++) {
+        const offset = i * (perPhotoDuration - crossfadeDuration);
+        const outputLabel = i === numPhotos - 1 ? 'vout' : `xf${i - 1}`;
+        filterParts.push(
+          `[${currentLabel}][v${i}]xfade=transition=fade:duration=${crossfadeDuration}:offset=${offset.toFixed(3)}[${outputLabel}]`
+        );
+        currentLabel = outputLabel;
+      }
+
+      const filterComplex = filterParts.join('; ');
+
+      // ffmpegコマンドを構築
+      const command = ffmpeg();
+
+      // 全写真を入力として追加
+      for (const photoPath of photoPaths) {
+        command.input(photoPath);
+      }
+
+      // 音声を最後の入力として追加
+      command.input(audioPath);
+
+      command
+        .complexFilter(filterComplex)
+        .outputOptions([
+          '-map', '[vout]',
+          '-map', `${numPhotos}:a:0`,
+          '-c:v', 'libx264',
+          '-crf', '28',
+          '-maxrate', '1500k',
+          '-bufsize', '3000k',
+          '-preset', 'medium',
+          '-c:a', 'aac',
+          '-b:a', '128k',
+          '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-movflags', '+faststart',
+          '-r', '30',
+        ])
+        .format('mp4')
+        .on('start', (cmd) => console.log('[Slideshow] FFmpeg command:', cmd))
+        .on('progress', (p) => {
+          if (p.percent) console.log(`[Slideshow] Processing: ${Math.floor(p.percent)}% done`);
+        })
+        .on('end', () => {
+          console.log('[Slideshow] Multi-photo video completed');
+          resolve({
+            outputPath,
+            audioDurationSeconds: audioDuration,
+            videoDurationSeconds: audioDuration,
+          });
+        })
+        .on('error', (err) => {
+          console.error('[Slideshow] FFmpeg error:', err);
+          reject(new Error(`Slideshow generation failed: ${err.message}`));
+        })
+        .save(outputPath);
+    });
+  }
 }
 
 module.exports = VideoService;
