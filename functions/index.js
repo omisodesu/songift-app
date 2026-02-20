@@ -2,7 +2,8 @@ const {onRequest, onCall} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {onDocumentCreated} = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
-const sgMail = require("@sendgrid/mail");
+const {google} = require("googleapis");
+const MailComposer = require("nodemailer/lib/mail-composer");
 const axios = require("axios");
 const crypto = require("crypto");
 const {Storage} = require("@google-cloud/storage");
@@ -119,6 +120,82 @@ function resolveEmailDestination(appEnv, stgOverrideTo, originalTo, originalSubj
   };
 }
 
+// --- Gmail API メール送信 ---
+
+const EMAIL_SENDER = {email: "fukui@tfs.jp.net", name: "Songift"};
+const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"];
+let gmailClient = null;
+
+/**
+ * Gmail APIクライアントを取得（サービスアカウント + ドメイン委任）
+ */
+async function getGmailClient() {
+  if (gmailClient) return gmailClient;
+
+  const serviceAccountKey = process.env.GMAIL_SERVICE_ACCOUNT_KEY;
+  if (!serviceAccountKey) {
+    throw new Error("GMAIL_SERVICE_ACCOUNT_KEY is not configured");
+  }
+
+  const credentials = JSON.parse(serviceAccountKey);
+  const auth = new google.auth.JWT({
+    email: credentials.client_email,
+    key: credentials.private_key,
+    scopes: GMAIL_SCOPES,
+    subject: EMAIL_SENDER.email,
+  });
+
+  gmailClient = google.gmail({version: "v1", auth});
+  return gmailClient;
+}
+
+/**
+ * nodemailer MailComposerでMIMEメッセージを構築し、base64url文字列を返す
+ */
+async function buildMimeMessage({to, subject, text, html, attachments}) {
+  const mailOptions = {
+    from: `"${EMAIL_SENDER.name}" <${EMAIL_SENDER.email}>`,
+    to,
+    subject,
+    text,
+    html,
+  };
+
+  if (attachments && attachments.length > 0) {
+    mailOptions.attachments = attachments.map((a) => ({
+      filename: a.filename,
+      content: Buffer.from(a.content, "base64"),
+      contentType: a.type,
+    }));
+  }
+
+  const mail = new MailComposer(mailOptions);
+  const message = await mail.compile().build();
+  return message.toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+}
+
+/**
+ * Gmail API経由でメール送信
+ */
+async function sendEmail(msg) {
+  const gmail = await getGmailClient();
+  const raw = await buildMimeMessage({
+    to: msg.to,
+    subject: msg.subject,
+    text: msg.text,
+    html: msg.html,
+    attachments: msg.attachments,
+  });
+
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: {raw},
+  });
+}
+
 /**
  * 注文作成 + トークン生成 + メール送信
  *
@@ -131,7 +208,7 @@ function resolveEmailDestination(appEnv, stgOverrideTo, originalTo, originalSubj
  */
 exports.createOrder = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GMAIL_SERVICE_ACCOUNT_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -222,16 +299,13 @@ ${orderUrl}
 ---
 Songift - 世界に一つのバースデーソング`;
 
-      const sendgridApiKey = process.env.SENDGRID_API_KEY;
-      if (sendgridApiKey) {
-        sgMail.setApiKey(sendgridApiKey.trim());
+      if (process.env.GMAIL_SERVICE_ACCOUNT_KEY) {
         const originalSubject = `【Songift】ご注文を受け付けました - ${email}様`;
         const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, email, originalSubject);
 
         if (!emailDestination.shouldSkip) {
-          await sgMail.send({
+          await sendEmail({
             to: emailDestination.to,
-            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
             subject: emailDestination.subject,
             text: emailBody,
             html: emailBody.replace(/\n/g, "<br>"),
@@ -381,7 +455,7 @@ exports.sendSlackNotification = onRequest({
  */
 exports.sendBirthdaySongEmail = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -420,17 +494,9 @@ exports.sendBirthdaySongEmail = onRequest({
     // サイズチェック
     const fileSizeMB = mp4Buffer.length / (1024 * 1024);
     console.log(`MP4 downloaded, size: ${fileSizeMB.toFixed(2)}MB`);
-    if (fileSizeMB > 25) {
-      console.warn(`⚠️ MP4 file size is large: ${fileSizeMB.toFixed(2)}MB (SendGrid limit: 30MB)`);
+    if (fileSizeMB > 15) {
+      console.warn(`MP4 file is ${fileSizeMB.toFixed(2)}MB. Gmail total message limit is 25MB (base64 encoding adds ~33% overhead). Files over ~18MB may fail.`);
     }
-
-    // SendGrid設定
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) {
-      throw new Error("SENDGRID_API_KEY is not configured");
-    }
-
-    sgMail.setApiKey(sendgridApiKey.trim());
 
     // 環境に応じてメール送信先を解決
     const appEnv = process.env.APP_ENV || "prod";
@@ -439,16 +505,27 @@ exports.sendBirthdaySongEmail = onRequest({
     const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
 
     if (emailDestination.shouldSkip) {
-      // STG環境でメール送信先が未設定の場合はスキップ
       console.log(`[STG] Email sending skipped (no override address configured). Original recipient: ${recipientEmail}`);
-    } else {
-      // メール送信
-      const msg = {
+    } else if (fileSizeMB > 18) {
+      // 18MB超: 添付せずダウンロードリンクで送信
+      const bucket = admin.storage().bucket();
+      const [downloadUrl] = await bucket.file(mp4Url.replace(/^gs:\/\/[^/]+\//, "")).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+
+      const linkEmailBody = `${emailBody}\n\n※ファイルサイズが大きいため、以下のリンクからダウンロードしてください（7日間有効）：\n${downloadUrl}`;
+      await sendEmail({
         to: emailDestination.to,
-        from: {
-          email: "fukui@gadandan.co.jp",
-          name: "Songift",
-        },
+        subject: emailDestination.subject,
+        text: linkEmailBody,
+        html: linkEmailBody.replace(/\n/g, "<br>"),
+      });
+      console.log(`Email sent with download link to ${emailDestination.to} (file too large for attachment: ${fileSizeMB.toFixed(2)}MB)`);
+    } else {
+      // 18MB以下: 添付で送信
+      await sendEmail({
+        to: emailDestination.to,
         subject: emailDestination.subject,
         text: emailBody,
         html: emailBody.replace(/\n/g, "<br>"),
@@ -457,13 +534,9 @@ exports.sendBirthdaySongEmail = onRequest({
             content: mp4Base64,
             filename: `birthday_song_${recipientName}.mp4`,
             type: "video/mp4",
-            disposition: "attachment",
           },
         ],
-      };
-
-      await sgMail.send(msg);
-
+      });
       console.log(`Email sent successfully to ${emailDestination.to} (original: ${recipientEmail}, env: ${appEnv})`);
     }
 
@@ -517,7 +590,7 @@ exports.sendBirthdaySongEmail = onRequest({
  */
 exports.sendPreviewEmail = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   res.set("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") {
@@ -545,10 +618,6 @@ exports.sendPreviewEmail = onRequest({
       return;
     }
     const order = orderDoc.data();
-
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) throw new Error("SENDGRID_API_KEY is not configured");
-    sgMail.setApiKey(sendgridApiKey.trim());
 
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
@@ -585,14 +654,12 @@ Songift運営チーム`;
     const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
 
     if (!emailDestination.shouldSkip) {
-      const msg = {
+      await sendEmail({
         to: emailDestination.to,
-        from: {email: "fukui@gadandan.co.jp", name: "Songift"},
         subject: emailDestination.subject,
         text: emailBody,
         html: emailBody.replace(/\n/g, "<br>"),
-      };
-      await sgMail.send(msg);
+      });
       console.log(`[sendPreviewEmail] Email sent to ${emailDestination.to}`);
     }
 
@@ -716,8 +783,8 @@ exports.getOrderByToken = onRequest({
       paymentStatus: order.paymentStatus || "unpaid",
       paidAt: order.paidAt || null,
       accessExpiresAt: order.accessExpiresAt || null,
-      // 2曲選択用: previews_ready時にgeneratedSongsを含める
-      generatedSongs: order.status === "previews_ready" ? order.generatedSongs : null,
+      // 2曲選択用: previews_readyまたはsong_timeout(実際は生成済み)時にgeneratedSongsを含める
+      generatedSongs: (order.status === "previews_ready" || (order.status === "song_timeout" && order.generatedSongs)) ? order.generatedSongs : null,
     };
 
     res.status(200).json({
@@ -750,7 +817,7 @@ exports.getOrderByToken = onRequest({
 exports.generateVideoAssets = onCall({
   timeoutSeconds: 540, // 9分
   memory: "1GiB",
-  secrets: ["VIDEO_GENERATOR_URL", "SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["VIDEO_GENERATOR_URL", "GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (request) => {
   const {orderId} = request.data;
 
@@ -903,11 +970,7 @@ exports.generateVideoAssets = onCall({
     // 7. メール送信
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-
-    if (sendgridApiKey) {
-      sgMail.setApiKey(sendgridApiKey.trim());
-
+    if (process.env.GMAIL_SERVICE_ACCOUNT_KEY) {
       // 最新のorderデータを再取得
       const updatedOrder = (await orderDoc.ref.get()).data();
 
@@ -939,14 +1002,12 @@ Songift運営チーム`;
         const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, updatedOrder.userEmail, originalSubject);
 
         if (!emailDestination.shouldSkip) {
-          const msg = {
+          await sendEmail({
             to: emailDestination.to,
-            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
             subject: emailDestination.subject,
             text: previewEmailBody,
             html: previewEmailBody.replace(/\n/g, "<br>"),
-          };
-          await sgMail.send(msg);
+          });
           console.log(`[generateVideoAssets] Preview email sent to ${emailDestination.to}`);
         }
 
@@ -957,7 +1018,7 @@ Songift運営チーム`;
         });
       }
     } else {
-      console.warn("[generateVideoAssets] SENDGRID_API_KEY not configured, skipping email");
+      console.warn("[generateVideoAssets] GMAIL_SERVICE_ACCOUNT_KEY not configured, skipping email");
     }
 
     console.log(`[generateVideoAssets] Completed for order: ${orderId}`);
@@ -1367,7 +1428,7 @@ exports.processPayment = onRequest({
  */
 exports.processRefund = onRequest({
   cors: true,
-  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (req, res) => {
   // CORSヘッダー設定
   res.set("Access-Control-Allow-Origin", "*");
@@ -1402,13 +1463,6 @@ exports.processRefund = onRequest({
     console.log(`[processRefund] Order ${orderId} marked as refunded`);
 
     // 2. 返金通知メール送信
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) {
-      throw new Error("SENDGRID_API_KEY is not configured");
-    }
-
-    sgMail.setApiKey(sendgridApiKey.trim());
-
     const emailBody = `
 ${recipientName} 様
 
@@ -1427,18 +1481,12 @@ Songift運営チーム
     const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, recipientEmail, originalSubject);
 
     if (!emailDestination.shouldSkip) {
-      const msg = {
+      await sendEmail({
         to: emailDestination.to,
-        from: {
-          email: "fukui@gadandan.co.jp",
-          name: "Songift",
-        },
         subject: emailDestination.subject,
         text: emailBody,
         html: emailBody.replace(/\n/g, "<br>"),
-      };
-
-      await sgMail.send(msg);
+      });
       console.log(`[processRefund] Refund notification email sent to ${emailDestination.to}`);
     }
 
@@ -1923,7 +1971,7 @@ exports.scheduleFollowup = onRequest({
 exports.sendFollowupEmails = onSchedule({
   schedule: "every 1 hours",
   timeZone: "Asia/Tokyo",
-  secrets: ["SENDGRID_API_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (event) => {
   console.log("[sendFollowupEmails] Starting scheduled job");
 
@@ -1939,12 +1987,10 @@ exports.sendFollowupEmails = onSchedule({
 
     console.log(`[sendFollowupEmails] Found ${pendingQueue.size} pending items`);
 
-    const sendgridApiKey = process.env.SENDGRID_API_KEY;
-    if (!sendgridApiKey) {
-      console.error("[sendFollowupEmails] SENDGRID_API_KEY not configured");
+    if (!process.env.GMAIL_SERVICE_ACCOUNT_KEY) {
+      console.error("[sendFollowupEmails] GMAIL_SERVICE_ACCOUNT_KEY not configured");
       return;
     }
-    sgMail.setApiKey(sendgridApiKey.trim());
 
     const appEnv = process.env.APP_ENV || "prod";
     const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
@@ -2045,15 +2091,15 @@ Songift運営チーム`;
         const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, userEmail, subject);
 
         if (!emailDestination.shouldSkip) {
-          const msg = {
+          await sendEmail({
             to: emailDestination.to,
-            from: {email: "fukui@gadandan.co.jp", name: "Songift"},
             subject: emailDestination.subject,
             text: emailBody,
             html: emailBody.replace(/\n/g, "<br>"),
-          };
-          await sgMail.send(msg);
+          });
           console.log(`[sendFollowupEmails] Email sent to ${emailDestination.to} (followupCount: ${followupCount})`);
+          // Gmail APIレート制限対応（秒間2-3送信制限）
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
 
         // キュー更新
@@ -2705,7 +2751,7 @@ exports.processAutomationQueue = onSchedule({
   timeZone: "Asia/Tokyo",
   memory: "1GiB",
   timeoutSeconds: 540,
-  secrets: ["GEMINI_API_KEY", "SUNO_API_KEY", "VIDEO_GENERATOR_URL", "SENDGRID_API_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
+  secrets: ["GEMINI_API_KEY", "SUNO_API_KEY", "VIDEO_GENERATOR_URL", "GMAIL_SERVICE_ACCOUNT_KEY", "SLACK_WEBHOOK_URL", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (event) => {
   const db = admin.firestore();
   const now = admin.firestore.Timestamp.now();
@@ -2959,13 +3005,6 @@ async function processEmailStep(orderRef, order, orderId) {
     return;
   }
 
-  const sendgridApiKey = process.env.SENDGRID_API_KEY;
-  if (!sendgridApiKey) {
-    throw new Error("SENDGRID_API_KEY is not configured");
-  }
-
-  sgMail.setApiKey(sendgridApiKey.trim());
-
   const appEnv = process.env.APP_ENV || "prod";
   const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
   const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
@@ -2993,15 +3032,12 @@ Songift運営チーム`;
   const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
 
   if (!emailDestination.shouldSkip) {
-    const msg = {
+    await sendEmail({
       to: emailDestination.to,
-      from: {email: "fukui@gadandan.co.jp", name: "Songift"},
       subject: emailDestination.subject,
       text: emailBody,
       html: emailBody.replace(/\n/g, "<br>"),
-    };
-
-    await sgMail.send(msg);
+    });
     console.log(`[processEmailStep] Preview email sent to ${emailDestination.to}`);
   } else {
     console.log(`[processEmailStep] Email skipped (STG environment)`);
@@ -3109,13 +3145,6 @@ async function processVideoStep(orderRef, order, orderId) {
  * MP4納品メール送信
  */
 async function sendDeliveryEmail(orderRef, order, orderId, fullVideoPath) {
-  const sendgridApiKey = process.env.SENDGRID_API_KEY;
-  if (!sendgridApiKey) {
-    throw new Error("SENDGRID_API_KEY is not configured");
-  }
-
-  sgMail.setApiKey(sendgridApiKey.trim());
-
   const appEnv = process.env.APP_ENV || "prod";
   const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
   const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
@@ -3135,7 +3164,8 @@ async function sendDeliveryEmail(orderRef, order, orderId, fullVideoPath) {
   });
 
   const mp4Buffer = Buffer.from(mp4Response.data);
-  const mp4Base64 = mp4Buffer.toString("base64");
+  const fileSizeMB = mp4Buffer.length / (1024 * 1024);
+  console.log(`[sendDeliveryEmail] MP4 size: ${fileSizeMB.toFixed(2)}MB`);
 
   const emailBody = `${order.userEmail} 様
 
@@ -3157,22 +3187,37 @@ Songift運営チーム`;
   const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
 
   if (!emailDestination.shouldSkip) {
-    const msg = {
-      to: emailDestination.to,
-      from: {email: "fukui@gadandan.co.jp", name: "Songift"},
-      subject: emailDestination.subject,
-      text: emailBody,
-      html: emailBody.replace(/\n/g, "<br>"),
-      attachments: [{
-        content: mp4Base64,
-        filename: `birthday_song_${order.targetName}.mp4`,
-        type: "video/mp4",
-        disposition: "attachment",
-      }],
-    };
+    if (fileSizeMB > 18) {
+      // 18MB超: 添付せずダウンロードリンクで送信
+      const [downloadUrl] = await bucket.file(fullVideoPath).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
 
-    await sgMail.send(msg);
-    console.log(`[sendDeliveryEmail] MP4 delivery email sent to ${emailDestination.to}`);
+      const linkEmailBody = `${emailBody}\n\n※ファイルサイズが大きいため、以下のリンクからダウンロードしてください（7日間有効）：\n${downloadUrl}`;
+      await sendEmail({
+        to: emailDestination.to,
+        subject: emailDestination.subject,
+        text: linkEmailBody,
+        html: linkEmailBody.replace(/\n/g, "<br>"),
+      });
+      console.log(`[sendDeliveryEmail] Email sent with download link (file too large: ${fileSizeMB.toFixed(2)}MB)`);
+    } else {
+      // 18MB以下: 添付で送信
+      const mp4Base64 = mp4Buffer.toString("base64");
+      await sendEmail({
+        to: emailDestination.to,
+        subject: emailDestination.subject,
+        text: emailBody,
+        html: emailBody.replace(/\n/g, "<br>"),
+        attachments: [{
+          content: mp4Base64,
+          filename: `birthday_song_${order.targetName}.mp4`,
+          type: "video/mp4",
+        }],
+      });
+      console.log(`[sendDeliveryEmail] MP4 delivery email sent to ${emailDestination.to}`);
+    }
   }
 
   await orderRef.update({
@@ -3219,6 +3264,13 @@ exports.checkSunoStatusScheduled = onSchedule({
         const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000;
 
         if (elapsedSeconds > 240) {
+          // レースコンディション防止: タイムアウト書き込み前にステータスを再確認
+          const freshDoc = await orderDoc.ref.get();
+          const freshStatus = freshDoc.data()?.status;
+          if (freshStatus !== "generating_song") {
+            console.log(`[checkSunoStatusScheduled] Order ${orderId} status already changed to ${freshStatus}, skipping timeout`);
+            continue;
+          }
           await orderDoc.ref.update({
             status: "song_timeout",
             sunoStatus: "TIMEOUT",
@@ -3358,8 +3410,8 @@ exports.selectSong = onCall({
     throw new Error("トークンの有効期限が切れています");
   }
 
-  // 選択可能な状態か確認
-  if (order.status !== "previews_ready") {
+  // 選択可能な状態か確認（song_timeoutでもgeneratedSongsがあれば選択可能）
+  if (order.status !== "previews_ready" && !(order.status === "song_timeout" && order.generatedSongs)) {
     throw new Error("選択できる状態ではありません");
   }
 

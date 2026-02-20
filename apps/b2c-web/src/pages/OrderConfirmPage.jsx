@@ -129,7 +129,7 @@ const OrderConfirmPage = () => {
 
   // 2曲のプレビュー署名URL取得（previews_ready状態時）
   useEffect(() => {
-    if (order?.status === "previews_ready" && order.generatedSongs && order.generatedSongs.length > 0) {
+    if ((order?.status === "previews_ready" || (order?.status === "song_timeout" && order?.generatedSongs)) && order.generatedSongs.length > 0) {
       const fetchUrls = async () => {
         const urls = await Promise.all(
           order.generatedSongs.map(async (song, index) => {
@@ -260,7 +260,11 @@ const OrderConfirmPage = () => {
     }
   };
 
-  const statusInfo = getStatusDisplay(order.status);
+  // song_timeoutでもgeneratedSongsがあればプレビュー完成として扱う
+  const effectiveStatus = (order.status === "song_timeout" && order.generatedSongs && order.generatedSongs.length > 0)
+    ? "previews_ready"
+    : order.status;
+  const statusInfo = getStatusDisplay(effectiveStatus);
 
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4">
@@ -330,7 +334,7 @@ const OrderConfirmPage = () => {
         )}
 
         {/* 2曲選択UI（previews_ready状態時） */}
-        {order.status === "previews_ready" && order.generatedSongs && order.generatedSongs.length > 0 && (
+        {(order.status === "previews_ready" || (order.status === "song_timeout" && order.generatedSongs)) && order.generatedSongs.length > 0 && (
           <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
             <h3 className="font-bold text-purple-800 mb-4 text-lg">
               🎵 2曲からお好みの曲を選んでください
