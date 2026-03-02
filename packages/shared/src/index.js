@@ -27,6 +27,14 @@ export const COLLECTIONS = {
   FOLLOWUP_QUEUE: 'followup_queue',
   /** IP-based rate limiting records */
   RATE_LIMITS: 'rate_limits',
+  /** B2B organizations */
+  ORGANIZATIONS: 'organizations',
+  /** Organization membership (keyed by uid) */
+  ORGANIZATION_MEMBERS: 'organization_members',
+  /** Super admin support sessions */
+  SUPPORT_SESSIONS: 'support_sessions',
+  /** Audit trail for admin actions */
+  AUDIT_LOGS: 'audit_logs',
 };
 
 // =============================================================================
@@ -126,15 +134,44 @@ export function getEnvironmentFromProjectId(projectId) {
  */
 
 /**
- * Organization for B2B
- * @typedef {Object} Org
- * @property {string} orgId - Unique organization ID
- * @property {string} name - Organization name
- * @property {string} plan - Subscription plan
- * @property {number} creditBalance - Current credit balance
- * @property {string[]} adminEmails - Admin user emails
+ * Organization for B2B multi-tenant
+ * @typedef {Object} Organization
+ * @property {string} name - Organization display name
+ * @property {'active' | 'suspended'} status - Organization status
  * @property {Date} createdAt - Organization creation timestamp
- * @property {boolean} isActive - Whether organization is active
+ * @property {string} createdBy - UID of the creator
+ */
+
+/**
+ * Organization membership (document ID = Firebase Auth UID)
+ * @typedef {Object} OrganizationMember
+ * @property {string} email - Member email address
+ * @property {string[]} orgIds - List of organization IDs the member belongs to
+ * @property {'super_admin' | 'org_admin' | 'org_member'} role - Member role
+ * @property {Date} createdAt - Membership creation timestamp
+ * @property {Date} updatedAt - Last update timestamp
+ */
+
+/**
+ * Super admin support session for impersonation
+ * @typedef {Object} SupportSession
+ * @property {string} superAdminUid - UID of the super admin
+ * @property {string} targetOrgId - Organization being accessed
+ * @property {Date} startedAt - Session start timestamp
+ * @property {Date|null} endedAt - Session end timestamp (null if active)
+ * @property {string} reason - Reason for the support session
+ */
+
+/**
+ * Audit log entry for admin actions
+ * @typedef {Object} AuditLog
+ * @property {string} actorUid - UID of the actor
+ * @property {string} actorEmail - Email of the actor
+ * @property {string} action - Action performed
+ * @property {string} targetOrgId - Target organization ID
+ * @property {string} targetResource - Target resource path
+ * @property {Date} createdAt - Action timestamp
+ * @property {Object} meta - Additional metadata
  */
 
 /**

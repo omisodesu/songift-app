@@ -9,10 +9,12 @@ import {
   NH_MEMORIES,
   NH_PERSONALITIES,
 } from '../lib/constants';
+import { useAuth } from '../contexts/AuthContext';
 
 
 // 楽曲作成オーダーページ
-const OrderPage = ({ user = null }) => {
+const OrderPage = () => {
+  const { user, currentOrgId, membership } = useAuth();
   const navigate = useNavigate();
   const trackedRef = useRef(false);
 
@@ -81,13 +83,21 @@ const OrderPage = ({ user = null }) => {
       // Cloud Functions createOrder を呼び出し
       const functionUrl = `${import.meta.env.VITE_FUNCTIONS_BASE_URL}/createOrder`;
 
+      // orgIdを決定: currentOrgId > 単一org所属 > なし
+      const orgId = currentOrgId || (membership?.orgIds?.length === 1 ? membership.orgIds[0] : null);
+
+      const idToken = user ? await user.getIdToken() : null;
+      const headers = { 'Content-Type': 'application/json' };
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
       const response = await fetch(functionUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           plan: 'nursingHome',
           formData: formData,
-          email: email
+          email: email,
+          orgId: orgId,
         })
       });
 

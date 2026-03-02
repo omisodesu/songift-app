@@ -1,6 +1,6 @@
-const {onRequest, onCall} = require("firebase-functions/v2/https");
+const {onRequest, onCall, HttpsError} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
-const {onDocumentCreated} = require("firebase-functions/v2/firestore");
+const {onDocumentCreated, onDocumentWritten} = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 const {google} = require("googleapis");
 const MailComposer = require("nodemailer/lib/mail-composer");
@@ -17,6 +17,10 @@ const COLLECTIONS = {
   VISITORS: 'visitors',
   FOLLOWUP_QUEUE: 'followup_queue',
   RATE_LIMITS: 'rate_limits',
+  ORGANIZATIONS: 'organizations',
+  ORGANIZATION_MEMBERS: 'organization_members',
+  SUPPORT_SESSIONS: 'support_sessions',
+  AUDIT_LOGS: 'audit_logs',
 };
 
 admin.initializeApp();
@@ -29,7 +33,99 @@ const feedbackCollection = () => db.collection(COLLECTIONS.FEEDBACK);
 const visitorsCollection = () => db.collection(COLLECTIONS.VISITORS);
 const followupQueueCollection = () => db.collection(COLLECTIONS.FOLLOWUP_QUEUE);
 const rateLimitsCollection = () => db.collection(COLLECTIONS.RATE_LIMITS);
+const organizationsRef = () => db.collection(COLLECTIONS.ORGANIZATIONS);
+const orgMembersRef = () => db.collection(COLLECTIONS.ORGANIZATION_MEMBERS);
+const supportSessionsRef = () => db.collection(COLLECTIONS.SUPPORT_SESSIONS);
+const auditLogsRef = () => db.collection(COLLECTIONS.AUDIT_LOGS);
 const storage = new Storage();
+
+// =============================================================================
+// マルチテナント認可ヘルパー
+// =============================================================================
+
+/**
+ * 認証必須チェック（onCall用）
+ * @param {Object} request - onCallのrequestオブジェクト
+ * @returns {Object} request.auth
+ */
+function requireAuth(request) {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', '認証が必要です');
+  }
+  return request.auth;
+}
+
+/**
+ * メンバーシップ取得
+ * @param {string} uid - Firebase Auth UID
+ * @returns {Promise<Object|null>} メンバーシップデータ
+ */
+async function getOrgMembership(uid) {
+  const doc = await orgMembersRef().doc(uid).get();
+  return doc.exists ? doc.data() : null;
+}
+
+/**
+ * super_admin権限チェック
+ * @param {Object} request - onCallのrequestオブジェクト
+ * @returns {Promise<{auth: Object, member: Object}>}
+ */
+async function requireSuperAdmin(request) {
+  const auth = requireAuth(request);
+  const member = await getOrgMembership(auth.uid);
+  if (!member || member.role !== 'super_admin') {
+    throw new HttpsError('permission-denied', 'super_admin権限が必要です');
+  }
+  return {auth, member};
+}
+
+/**
+ * orgアクセス権チェック（super_adminは全orgアクセス可）
+ * @param {Object} request - onCallのrequestオブジェクト
+ * @param {string} orgId - アクセス対象のorgId
+ * @returns {Promise<{auth: Object, member: Object}>}
+ */
+async function requireOrgAccess(request, orgId) {
+  const auth = requireAuth(request);
+  const member = await getOrgMembership(auth.uid);
+  if (!member) {
+    throw new HttpsError('permission-denied', 'メンバーシップが見つかりません');
+  }
+  if (member.role === 'super_admin') return {auth, member};
+  if (!member.orgIds || !member.orgIds.includes(orgId)) {
+    throw new HttpsError('permission-denied', 'この組織へのアクセス権がありません');
+  }
+  return {auth, member};
+}
+
+/**
+ * onRequest用の認証検証（Authorizationヘッダーから）
+ * @param {Object} req - Express requestオブジェクト
+ * @returns {Promise<Object>} デコードされたトークン
+ */
+async function verifyAuthFromRequest(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  const token = authHeader.split('Bearer ')[1];
+  return admin.auth().verifyIdToken(token);
+}
+
+/**
+ * 監査ログ記録
+ */
+async function writeAuditLog({actorUid, actorEmail, action, targetOrgId, targetResource, meta = {}}) {
+  await auditLogsRef().add({
+    actorUid,
+    actorEmail,
+    action,
+    targetOrgId: targetOrgId || null,
+    targetResource: targetResource || null,
+    meta,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
 
 /**
  * レート制限チェック（Firestoreベース）
@@ -252,7 +348,23 @@ exports.createOrder = onRequest({
       return;
     }
 
-    console.log(`Creating order for: ${email}, plan: ${plan}`);
+    // B2B注文（nursingHome）はorgId必須
+    let orderOrgId = null;
+    if (plan === "nursingHome") {
+      const {orgId} = req.body;
+      if (!orgId) {
+        res.status(400).json({error: "B2B注文にはorgIdが必要です"});
+        return;
+      }
+      const orgDoc = await organizationsRef().doc(orgId).get();
+      if (!orgDoc.exists || orgDoc.data().status !== "active") {
+        res.status(400).json({error: "無効な組織IDです"});
+        return;
+      }
+      orderOrgId = orgId;
+    }
+
+    console.log(`Creating order for: ${email}, plan: ${plan}${orderOrgId ? `, orgId: ${orderOrgId}` : ""}`);
 
     // トークン生成（32バイト = 64文字のhex）
     const token = crypto.randomBytes(32).toString("hex");
@@ -262,7 +374,7 @@ exports.createOrder = onRequest({
     const tokenExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
     // Firestoreに注文を保存
-    const orderRef = await admin.firestore().collection("orders").add({
+    const orderData = {
       userId: null, // 一般ユーザーはnull
       userEmail: email,
       plan: plan,
@@ -274,7 +386,14 @@ exports.createOrder = onRequest({
       tokenExpiresAt: tokenExpiresAt,
       tokenAccessCount: 0,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    };
+
+    // B2B注文にはorgIdを付与
+    if (orderOrgId) {
+      orderData.orgId = orderOrgId;
+    }
+
+    const orderRef = await admin.firestore().collection("orders").add(orderData);
 
     const orderId = orderRef.id;
     console.log(`Order created: ${orderId}`);
@@ -819,10 +938,12 @@ exports.generateVideoAssets = onCall({
   memory: "1GiB",
   secrets: ["VIDEO_GENERATOR_URL", "GMAIL_SERVICE_ACCOUNT_KEY", "APP_ENV", "STG_EMAIL_OVERRIDE_TO"],
 }, async (request) => {
+  // 認証 + orgアクセスチェック
+  requireAuth(request);
   const {orderId} = request.data;
 
   if (!orderId) {
-    throw new Error("orderId is required");
+    throw new HttpsError("invalid-argument", "orderId is required");
   }
 
   console.log(`[generateVideoAssets] Starting for order: ${orderId}`);
@@ -836,6 +957,13 @@ exports.generateVideoAssets = onCall({
     }
 
     const order = orderDoc.data();
+
+    // orgアクセスチェック
+    if (order.orgId) {
+      await requireOrgAccess(request, order.orgId);
+    } else {
+      await requireSuperAdmin(request);
+    }
 
     if (!order.selectedSongUrl) {
       throw new Error("selectedSongUrl is not set. Please select a song first.");
@@ -1209,10 +1337,11 @@ exports.getFullSignedUrl = onCall({
 exports.getAdminPreviewSignedUrl = onCall({
   cors: true,
 }, async (request) => {
+  requireAuth(request);
   const {orderId} = request.data;
 
   if (!orderId) {
-    throw new Error("orderId is required");
+    throw new HttpsError("invalid-argument", "orderId is required");
   }
 
   console.log(`[getAdminPreviewSignedUrl] Request for order: ${orderId}`);
@@ -1225,6 +1354,13 @@ exports.getAdminPreviewSignedUrl = onCall({
     }
 
     const order = orderDoc.data();
+
+    // orgアクセスチェック
+    if (order.orgId) {
+      await requireOrgAccess(request, order.orgId);
+    } else {
+      await requireSuperAdmin(request);
+    }
 
     // previewAudioPath が存在するか確認
     if (!order.previewAudioPath) {
@@ -1264,10 +1400,11 @@ exports.getAdminPreviewSignedUrl = onCall({
 exports.getAdminFullSignedUrl = onCall({
   cors: true,
 }, async (request) => {
+  requireAuth(request);
   const {orderId} = request.data;
 
   if (!orderId) {
-    throw new Error("orderId is required");
+    throw new HttpsError("invalid-argument", "orderId is required");
   }
 
   console.log(`[getAdminFullSignedUrl] Request for order: ${orderId}`);
@@ -1280,6 +1417,13 @@ exports.getAdminFullSignedUrl = onCall({
     }
 
     const order = orderDoc.data();
+
+    // orgアクセスチェック
+    if (order.orgId) {
+      await requireOrgAccess(request, order.orgId);
+    } else {
+      await requireSuperAdmin(request);
+    }
 
     // fullVideoPath が存在するか確認
     if (!order.fullVideoPath) {
@@ -1323,10 +1467,11 @@ exports.getAdminFullSignedUrl = onCall({
 exports.getAdminFullPermanentUrl = onCall({
   cors: true,
 }, async (request) => {
+  requireAuth(request);
   const {orderId} = request.data;
 
   if (!orderId) {
-    throw new Error("orderId is required");
+    throw new HttpsError("invalid-argument", "orderId is required");
   }
 
   console.log(`[getAdminFullPermanentUrl] Request for order: ${orderId}`);
@@ -1339,6 +1484,13 @@ exports.getAdminFullPermanentUrl = onCall({
     }
 
     const order = orderDoc.data();
+
+    // orgアクセスチェック
+    if (order.orgId) {
+      await requireOrgAccess(request, order.orgId);
+    } else {
+      await requireSuperAdmin(request);
+    }
 
     if (!order.fullVideoPath) {
       throw new Error("フル動画がまだ生成されていません");
@@ -1393,7 +1545,7 @@ exports.processPayment = onRequest({
 
   if (req.method === "OPTIONS") {
     res.set("Access-Control-Allow-Methods", "POST");
-    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.status(204).send("");
     return;
   }
@@ -1418,6 +1570,20 @@ exports.processPayment = onRequest({
     }
 
     const order = orderDoc.data();
+
+    // B2B注文の場合は認証必須
+    if (order.orgId && order.plan === "nursingHome") {
+      const decoded = await verifyAuthFromRequest(req);
+      if (!decoded) {
+        res.status(401).json({error: "B2B注文の支払い処理には認証が必要です"});
+        return;
+      }
+      const member = await getOrgMembership(decoded.uid);
+      if (!member || (member.role !== "super_admin" && (!member.orgIds || !member.orgIds.includes(order.orgId)))) {
+        res.status(403).json({error: "この組織へのアクセス権がありません"});
+        return;
+      }
+    }
 
     // idempotent化: 支払い済み かつ 納品済み なら完全スキップ
     const alreadyPaid = !!order.isPaid;
@@ -1505,7 +1671,7 @@ exports.processRefund = onRequest({
 
   if (req.method === "OPTIONS") {
     res.set("Access-Control-Allow-Methods", "POST");
-    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.status(204).send("");
     return;
   }
@@ -1519,6 +1685,25 @@ exports.processRefund = onRequest({
         required: ["orderId", "recipientEmail", "recipientName"],
       });
       return;
+    }
+
+    // B2B注文の場合は認証必須
+    const orderCheckRef = admin.firestore().collection("orders").doc(orderId);
+    const orderCheckDoc = await orderCheckRef.get();
+    if (orderCheckDoc.exists) {
+      const orderCheck = orderCheckDoc.data();
+      if (orderCheck.orgId && orderCheck.plan === "nursingHome") {
+        const decoded = await verifyAuthFromRequest(req);
+        if (!decoded) {
+          res.status(401).json({error: "B2B注文の返金処理には認証が必要です"});
+          return;
+        }
+        const member = await getOrgMembership(decoded.uid);
+        if (!member || (member.role !== "super_admin" && (!member.orgIds || !member.orgIds.includes(orderCheck.orgId)))) {
+          res.status(403).json({error: "この組織へのアクセス権がありません"});
+          return;
+        }
+      }
     }
 
     console.log(`[processRefund] Processing refund for order ${orderId}`);
@@ -3549,4 +3734,284 @@ exports.getPreviewSignedUrlBySongIndex = onCall({
   });
 
   return {signedUrl};
+});
+
+// =============================================================================
+// マルチテナント管理 Functions
+// =============================================================================
+
+/**
+ * syncCustomClaims - organization_members変更時にCustom Claimsを自動同期
+ *
+ * organization_members/{uid} のonWriteトリガー。
+ * ドキュメントが作成/更新されるとroleとorgIdsをCustom Claimsに設定。
+ * 削除時はClaimsをクリア。
+ */
+exports.syncCustomClaims = onDocumentWritten({
+  document: 'organization_members/{uid}',
+}, async (event) => {
+  const uid = event.params.uid;
+  const afterData = event.data.after?.data();
+
+  if (!afterData) {
+    // ドキュメント削除 → claims削除
+    console.log(`[syncCustomClaims] Member deleted: ${uid}, clearing claims`);
+    await admin.auth().setCustomUserClaims(uid, {});
+    return;
+  }
+
+  const claims = {
+    role: afterData.role || null,
+    orgIds: afterData.orgIds || [],
+  };
+
+  console.log(`[syncCustomClaims] Syncing claims for ${uid}:`, JSON.stringify(claims));
+  await admin.auth().setCustomUserClaims(uid, claims);
+});
+
+/**
+ * getMyMembership - ログイン後にフロントから呼び出し、自分のメンバーシップ情報を取得
+ *
+ * 入力: なし（認証情報から自動取得）
+ * 出力: { role, orgIds, organizations: [{id, name, status}] }
+ */
+exports.getMyMembership = onCall({
+  cors: true,
+}, async (request) => {
+  const auth = requireAuth(request);
+
+  const memberDoc = await orgMembersRef().doc(auth.uid).get();
+  if (!memberDoc.exists) {
+    return {role: null, orgIds: [], organizations: []};
+  }
+
+  const member = memberDoc.data();
+
+  // 所属org情報も返す
+  const organizations = [];
+  if (member.orgIds && member.orgIds.length > 0) {
+    for (const orgId of member.orgIds) {
+      const orgDoc = await organizationsRef().doc(orgId).get();
+      if (orgDoc.exists) {
+        const orgData = orgDoc.data();
+        organizations.push({id: orgId, name: orgData.name, status: orgData.status});
+      }
+    }
+  }
+
+  return {
+    role: member.role,
+    orgIds: member.orgIds || [],
+    organizations,
+  };
+});
+
+/**
+ * createOrganization - 新規組織作成（super_adminのみ）
+ *
+ * 入力: { name: string }
+ * 出力: { orgId: string }
+ */
+exports.createOrganization = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {name} = request.data;
+
+  if (!name || name.trim().length === 0) {
+    throw new HttpsError('invalid-argument', '組織名を入力してください');
+  }
+
+  const orgRef = organizationsRef().doc();
+  await orgRef.set({
+    name: name.trim(),
+    status: 'active',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdBy: auth.uid,
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'create_organization',
+    targetOrgId: orgRef.id,
+    targetResource: `organizations/${orgRef.id}`,
+    meta: {name: name.trim()},
+  });
+
+  console.log(`[createOrganization] Created org ${orgRef.id}: ${name.trim()}`);
+  return {orgId: orgRef.id};
+});
+
+/**
+ * inviteMember - メンバー招待/追加（super_adminのみ）
+ *
+ * Firebase Authに登録済みのユーザーを組織に追加する。
+ * 未登録の場合はエラー（先にGoogleログインが必要）。
+ *
+ * 入力: { email: string, orgId: string, role?: 'org_admin' | 'org_member' }
+ * 出力: { success: true, uid: string }
+ */
+exports.inviteMember = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {email, orgId, role} = request.data;
+
+  if (!email || !orgId) {
+    throw new HttpsError('invalid-argument', 'emailとorgIdは必須です');
+  }
+
+  const memberRole = role || 'org_member';
+  if (!['org_admin', 'org_member'].includes(memberRole)) {
+    throw new HttpsError('invalid-argument', 'roleはorg_adminまたはorg_memberです');
+  }
+
+  // org存在確認
+  const orgDoc = await organizationsRef().doc(orgId).get();
+  if (!orgDoc.exists) {
+    throw new HttpsError('not-found', '組織が見つかりません');
+  }
+
+  // Firebase Authでユーザー検索
+  let userRecord;
+  try {
+    userRecord = await admin.auth().getUserByEmail(email);
+  } catch (e) {
+    throw new HttpsError('not-found',
+        'このメールアドレスのユーザーが見つかりません。先にGoogleログインが必要です。');
+  }
+
+  const memberRef = orgMembersRef().doc(userRecord.uid);
+  const existing = await memberRef.get();
+
+  if (existing.exists) {
+    // 既存メンバー → orgIds追加
+    const currentData = existing.data();
+    const currentOrgIds = currentData.orgIds || [];
+    if (!currentOrgIds.includes(orgId)) {
+      await memberRef.update({
+        orgIds: [...currentOrgIds, orgId],
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    // roleの更新はsuper_adminからの変更のみ
+    // super_adminのroleは変更しない
+    if (currentData.role !== 'super_admin' && currentData.role !== memberRole) {
+      await memberRef.update({role: memberRole});
+    }
+  } else {
+    // 新規メンバー
+    await memberRef.set({
+      email: email,
+      orgIds: [orgId],
+      role: memberRole,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'invite_member',
+    targetOrgId: orgId,
+    targetResource: `organization_members/${userRecord.uid}`,
+    meta: {invitedEmail: email, role: memberRole},
+  });
+
+  console.log(`[inviteMember] Added ${email} (${userRecord.uid}) to org ${orgId} as ${memberRole}`);
+  return {success: true, uid: userRecord.uid};
+});
+
+/**
+ * startSupportSession - サポートモード開始（super_adminのみ）
+ *
+ * 入力: { targetOrgId: string, reason: string }
+ * 出力: { sessionId: string }
+ */
+exports.startSupportSession = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {targetOrgId, reason} = request.data;
+
+  if (!targetOrgId) {
+    throw new HttpsError('invalid-argument', '対象組織IDは必須です');
+  }
+  if (!reason || reason.trim().length < 5) {
+    throw new HttpsError('invalid-argument', 'サポート理由を5文字以上で入力してください');
+  }
+
+  // org存在確認
+  const orgDoc = await organizationsRef().doc(targetOrgId).get();
+  if (!orgDoc.exists) {
+    throw new HttpsError('not-found', '組織が見つかりません');
+  }
+
+  const sessionRef = supportSessionsRef().doc();
+  await sessionRef.set({
+    superAdminUid: auth.uid,
+    targetOrgId: targetOrgId,
+    startedAt: admin.firestore.FieldValue.serverTimestamp(),
+    endedAt: null,
+    reason: reason.trim(),
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'start_support_session',
+    targetOrgId: targetOrgId,
+    targetResource: `support_sessions/${sessionRef.id}`,
+    meta: {reason: reason.trim()},
+  });
+
+  console.log(`[startSupportSession] ${auth.token.email} started support for org ${targetOrgId}`);
+  return {sessionId: sessionRef.id};
+});
+
+/**
+ * endSupportSession - サポートモード終了（super_adminのみ）
+ *
+ * 入力: { sessionId: string }
+ * 出力: { success: true }
+ */
+exports.endSupportSession = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {sessionId} = request.data;
+
+  if (!sessionId) {
+    throw new HttpsError('invalid-argument', 'sessionIdは必須です');
+  }
+
+  const sessionRef = supportSessionsRef().doc(sessionId);
+  const sessionDoc = await sessionRef.get();
+
+  if (!sessionDoc.exists) {
+    throw new HttpsError('not-found', 'セッションが見つかりません');
+  }
+
+  const sessionData = sessionDoc.data();
+
+  if (sessionData.endedAt) {
+    throw new HttpsError('failed-precondition', 'このセッションは既に終了しています');
+  }
+
+  await sessionRef.update({
+    endedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'end_support_session',
+    targetOrgId: sessionData.targetOrgId,
+    targetResource: `support_sessions/${sessionId}`,
+  });
+
+  console.log(`[endSupportSession] ${auth.token.email} ended support session ${sessionId}`);
+  return {success: true};
 });

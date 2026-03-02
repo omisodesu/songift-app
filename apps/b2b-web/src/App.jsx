@@ -1,65 +1,83 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { BrowserRouter, Link } from 'react-router-dom';
 import AppRoutes from './routes/AppRoutes';
-// Firebase関連
-import { signOut, onAuthStateChanged } from "firebase/auth";
-import { auth } from './lib/firebase';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+
+// ---------------------------
+// ヘッダーコンポーネント（認証コンテキスト使用）
+// ---------------------------
+function AppHeader() {
+  const { user, membership, logout, isSuperAdmin, supportSession, currentOrgId } = useAuth();
+
+  if (!user || !membership?.role) return null;
+
+  const handleLogout = async () => {
+    await logout();
+    alert("ログアウトしました");
+  };
+
+  // 管理画面リンクの遷移先をロール別に決定
+  const getAdminLink = () => {
+    if (isSuperAdmin() && !supportSession) return '/admin/super';
+    if (currentOrgId) return `/admin/org/${currentOrgId}`;
+    if (membership.orgIds?.length === 1) return `/admin/org/${membership.orgIds[0]}`;
+    return '/admin/org-select';
+  };
+
+  return (
+    <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
+      {/* サポートモードバナー */}
+      {supportSession && (
+        <div className="absolute top-0 left-0 right-0 bg-red-600 text-white text-center py-1 text-sm font-bold">
+          [サポートモード] {supportSession.orgName}を操作中 — 理由: {supportSession.reason}
+        </div>
+      )}
+
+      <div className={`flex items-center gap-6 ${supportSession ? 'mt-6' : ''}`}>
+        <Link to="/" className="font-bold text-blue-600 text-xl">バースデーソングメーカー</Link>
+        <Link to={getAdminLink()} className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
+          管理者画面へ
+        </Link>
+        <Link to="/order" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-amber-100 px-3 py-1 rounded">
+          新規オーダー
+        </Link>
+      </div>
+      <div className={`flex items-center gap-4 ${supportSession ? 'mt-6' : ''}`}>
+        {membership.role && (
+          <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded">
+            {membership.role === 'super_admin' ? 'Super Admin' :
+             membership.role === 'org_admin' ? 'Org Admin' : 'Member'}
+          </span>
+        )}
+        <span className="text-sm text-gray-600">{user.displayName}さん</span>
+        <button onClick={handleLogout} className="text-sm text-red-500 underline">ログアウト</button>
+      </div>
+    </header>
+  );
+}
 
 // ---------------------------
 // メインアプリコンポーネント
 // ---------------------------
-function App() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleLogout = async () => {
-    await signOut(auth);
-    alert("ログアウトしました");
-  };
-
-  // 管理者判定ヘルパー
-  const isAdmin = (user) => {
-    if (!user) return false;
-    const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
-    const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
-    return adminEmails.includes(user.email);
-  };
+function AppContent() {
+  const { user, membership, loading } = useAuth();
 
   if (loading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
 
   return (
-    <BrowserRouter>
-      {/* ヘッダーは管理者のみ表示 */}
-      {user && isAdmin(user) && (
-        <header className="p-4 bg-white shadow-sm flex justify-between items-center fixed top-0 w-full z-10">
-          <div className="flex items-center gap-6">
-            <Link to="/" className="font-bold text-blue-600 text-xl">バースデーソングメーカー</Link>
-            <Link to="/admin" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-gray-100 px-3 py-1 rounded">
-              管理者画面へ
-            </Link>
-            <Link to="/order" className="text-sm font-bold text-gray-600 hover:text-blue-500 bg-amber-100 px-3 py-1 rounded">
-              新規オーダー
-            </Link>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">{user.displayName}さん</span>
-            <button onClick={handleLogout} className="text-sm text-red-500 underline">ログアウト</button>
-          </div>
-        </header>
-      )}
+    <>
+      <AppHeader />
+      <AppRoutes user={user} membership={membership} />
+    </>
+  );
+}
 
-      <AppRoutes
-        user={user}
-        isAdmin={isAdmin}
-      />
+function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </BrowserRouter>
   );
 }

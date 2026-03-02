@@ -1,47 +1,69 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { signInWithPopup, signOut } from "firebase/auth";
-import { auth, googleProvider } from '../../lib/firebase';
+import { signInWithPopup, signOut } from 'firebase/auth';
+import { httpsCallable } from 'firebase/functions';
+import { auth, googleProvider, functions } from '../../lib/firebase';
 
-// 5. 管理者ログインページ
 const AdminLoginPage = () => {
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(false);
 
   const handleGoogleLogin = async () => {
+    setLoading(true);
     try {
       console.log('[Auth] Attempting Google sign in with popup...');
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       console.log('[Auth] Sign in successful:', user.email);
 
-      // 管理者チェック
-      const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
-      const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
+      // Custom Claims強制リフレッシュ
+      await user.getIdToken(true);
 
-      if (!adminEmails.includes(user.email)) {
-        console.warn('[Auth] User is not an admin:', user.email);
+      // メンバーシップ確認
+      const getMyMembership = httpsCallable(functions, 'getMyMembership');
+      const membershipResult = await getMyMembership();
+      const membership = membershipResult.data;
+
+      console.log('[Auth] Membership:', JSON.stringify(membership));
+
+      if (!membership.role) {
+        console.warn('[Auth] User has no membership:', user.email);
         await signOut(auth);
-        alert('管理者権限がありません');
+        alert('管理者権限がありません。管理者に招待を依頼してください。');
+        setLoading(false);
         return;
       }
 
-      console.log('[Auth] Admin verified, navigating to /admin');
-      navigate('/admin');
+      // ロール別にリダイレクト
+      if (membership.role === 'super_admin') {
+        console.log('[Auth] Super admin, navigating to /admin/super');
+        navigate('/admin/super');
+      } else if (membership.orgIds?.length === 1) {
+        console.log(`[Auth] Single org member, navigating to /admin/org/${membership.orgIds[0]}`);
+        navigate(`/admin/org/${membership.orgIds[0]}`);
+      } else if (membership.orgIds?.length > 1) {
+        console.log('[Auth] Multi-org member, navigating to /admin/org-select');
+        navigate('/admin/org-select');
+      } else {
+        console.warn('[Auth] Member has no orgs:', user.email);
+        await signOut(auth);
+        alert('所属する組織がありません。管理者に連絡してください。');
+      }
     } catch (error) {
-      // 詳細なエラー情報をログ出力
       console.error('[Auth] Login error occurred:', {
         code: error?.code,
         message: error?.message,
         email: error?.customData?.email,
-        fullError: error
+        fullError: error,
       });
 
-      // ユーザーにも詳細を表示
       const code = error?.code || '(no code)';
       const message = error?.message || String(error);
       const email = error?.customData?.email ? `\nemail: ${error.customData.email}` : '';
 
-      alert(`ログインに失敗しました。${email}\n\nエラーコード: ${code}\n\n詳細: ${message}\n\nFirebase設定を確認してください:\n- projectId: ${import.meta.env.VITE_FIREBASE_PROJECT_ID}\n- authDomain: ${import.meta.env.VITE_FIREBASE_AUTH_DOMAIN}`);
+      alert(`ログインに失敗しました。${email}\n\nエラーコード: ${code}\n\n詳細: ${message}`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -50,9 +72,19 @@ const AdminLoginPage = () => {
       <h2 className="text-2xl font-bold mb-6">管理者ログイン</h2>
       <button
         onClick={handleGoogleLogin}
-        className="bg-white border border-gray-300 text-gray-700 font-bold py-3 px-6 rounded shadow hover:bg-gray-100 transition"
+        disabled={loading}
+        className="bg-white border border-gray-300 text-gray-700 font-bold py-3 px-6 rounded shadow hover:bg-gray-100 transition disabled:opacity-50"
       >
-        <span className="text-blue-500 mr-2">G</span> Googleでログイン
+        {loading ? (
+          <span className="flex items-center gap-2">
+            <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></span>
+            ログイン中...
+          </span>
+        ) : (
+          <>
+            <span className="text-blue-500 mr-2">G</span> Googleでログイン
+          </>
+        )}
       </button>
       <Link to="/" className="text-blue-500 text-sm underline mt-6 block">
         トップページへ

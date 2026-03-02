@@ -2,61 +2,113 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 管理者判定ヘルパー関数
-    // 注: Security Rulesでは環境変数を読めないため、ここに直接記載する必要があります
-    function isAdmin() {
+    // =========================================================================
+    // マルチテナント認可ヘルパー関数
+    // Custom Claims (role, orgIds) はorganization_members変更時にsyncCustomClaimsで自動同期
+    // =========================================================================
+
+    // super_admin判定（Custom Claimsベース）
+    function isSuperAdmin() {
       return request.auth != null &&
-             request.auth.token.email in [
-               'fukui@tfs.jp.net',
-               'gadandan@tfs.jp.net',
-               'sknn0811@gmail.com'
-             ];
+             request.auth.token.role == 'super_admin';
     }
+
+    // org所属判定（super_adminは全orgアクセス可）
+    function hasOrgAccess(orgId) {
+      return isSuperAdmin() ||
+        (request.auth != null &&
+         request.auth.token.orgIds is list &&
+         orgId in request.auth.token.orgIds);
+    }
+
+    // 認証済みユーザー判定
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // =========================================================================
+    // マルチテナント対応コレクション
+    // =========================================================================
+
+    // organizations コレクション: 組織情報
+    match /organizations/{orgId} {
+      // 読み取り: 所属メンバー + super_admin
+      allow read: if hasOrgAccess(orgId);
+      // 書き込み: super_adminのみ
+      allow write: if isSuperAdmin();
+    }
+
+    // organization_members コレクション: メンバーシップ
+    match /organization_members/{uid} {
+      // 読み取り: 本人 + super_admin
+      allow read: if isAuthenticated() && (request.auth.uid == uid || isSuperAdmin());
+      // 書き込み: super_adminのみ（Cloud Functions経由推奨）
+      allow write: if isSuperAdmin();
+    }
+
+    // support_sessions コレクション: サポートモード管理
+    match /support_sessions/{sessionId} {
+      // 読み取り: super_adminのみ
+      allow read: if isSuperAdmin();
+      // 書き込み: Cloud Functions経由のみ
+      allow write: if false;
+    }
+
+    // audit_logs コレクション: 監査ログ
+    match /audit_logs/{logId} {
+      // 読み取り: super_adminのみ
+      allow read: if isSuperAdmin();
+      // 書き込み: Cloud Functions経由のみ
+      allow write: if false;
+    }
+
+    // =========================================================================
+    // 既存コレクション（マルチテナント対応）
+    // =========================================================================
 
     // orders コレクション
     match /orders/{orderId} {
-      // 読み取り: 管理者のみ
-      allow read: if isAdmin();
+      // 読み取り: super_admin は全件、org所属者は自orgのみ
+      allow read: if isSuperAdmin() ||
+        (resource.data.orgId != null && hasOrgAccess(resource.data.orgId));
 
-      // 作成: 禁止（Cloud Functions経由のみ）
+      // 作成: Cloud Functions経由のみ
       allow create: if false;
 
-      // 更新: 管理者のみ
-      allow update: if isAdmin();
+      // 更新: super_admin は全件、org所属者は自orgのみ
+      allow update: if isSuperAdmin() ||
+        (resource.data.orgId != null && hasOrgAccess(resource.data.orgId));
 
-      // 削除: 管理者のみ
-      allow delete: if isAdmin();
+      // 削除: super_adminのみ
+      allow delete: if isSuperAdmin();
     }
 
     // rate_limits コレクション: Cloud Functions内部用
     match /rate_limits/{doc} {
-      // 外部からのアクセスを完全に禁止
       allow read, write: if false;
     }
 
-    // feedback コレクション: フィードバック/レビュー
+    // automation_queue コレクション: Cloud Functions内部用
+    match /automation_queue/{queueId} {
+      allow read, write: if false;
+    }
+
+    // feedback コレクション
     match /feedback/{feedbackId} {
-      // 読み取り: 管理者のみ
-      allow read: if isAdmin();
-      // 更新: 管理者のみ（対応済みマーク用）
-      allow update: if isAdmin();
-      // 作成・削除: Cloud Functions経由のみ
+      allow read: if isSuperAdmin();
+      allow update: if isSuperAdmin();
       allow create, delete: if false;
     }
 
-    // visitors コレクション: 訪問者情報（露出制御用）
+    // visitors コレクション
     match /visitors/{visitorId} {
-      // 読み取り: 管理者のみ
-      allow read: if isAdmin();
-      // 作成・更新・削除: Cloud Functions経由のみ
+      allow read: if isSuperAdmin();
       allow create, update, delete: if false;
     }
 
-    // followup_queue コレクション: フォローアップメールキュー
+    // followup_queue コレクション
     match /followup_queue/{queueId} {
-      // 読み取り: 管理者のみ
-      allow read: if isAdmin();
-      // 作成・更新・削除: Cloud Functions経由のみ
+      allow read: if isSuperAdmin();
       allow create, update, delete: if false;
     }
 

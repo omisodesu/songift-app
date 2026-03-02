@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  collection, query, orderBy, doc, updateDoc, onSnapshot, serverTimestamp
+  collection, query, orderBy, where, doc, updateDoc, onSnapshot, serverTimestamp
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { ref, uploadBytes } from "firebase/storage";
@@ -11,11 +11,11 @@ import { buildProModePrompt } from '../../lib/prompts/proMode';
 import { QRCodeCanvas } from 'qrcode.react';
 
 // 6. 管理者ダッシュボード
-const AdminPage = ({ user }) => {
+const AdminPage = ({ user, orgId = null }) => {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [orderFilter, setOrderFilter] = useState('all'); // 'all' | 'b2b' | 'b2c'
+  const [orderFilter, setOrderFilter] = useState(orgId ? 'b2b' : 'all'); // 'all' | 'b2b' | 'b2c'
 
   // 編集機能用の状態管理
   const [editingOrderId, setEditingOrderId] = useState(null);
@@ -37,19 +37,21 @@ const AdminPage = ({ user }) => {
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
   const SUNO_API_KEY = import.meta.env.VITE_SUNO_API_KEY;
 
-  // 認証チェック
+  // 認証チェック（AuthContextのProtectedRouteで保護されているため簡易チェック）
   useEffect(() => {
-    const adminEmailsStr = import.meta.env.VITE_ADMIN_EMAIL || '';
-    const adminEmails = adminEmailsStr.split(',').map(e => e.trim());
-
-    if (!user || !adminEmails.includes(user.email)) {
-      alert('管理者権限が必要です');
+    if (!user) {
       navigate('/admin/login');
     }
   }, [user, navigate]);
 
+  // Firestoreクエリ: orgId指定時はorgスコープ、nullなら全件（super_admin用）
   useEffect(() => {
-    const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+    let q;
+    if (orgId) {
+      q = query(collection(db, "orders"), where("orgId", "==", orgId), orderBy("createdAt", "desc"));
+    } else {
+      q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
+    }
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -58,9 +60,12 @@ const AdminPage = ({ user }) => {
       }));
       setOrders(data);
       setLoading(false);
+    }, (error) => {
+      console.error('[AdminPage] Firestore query error:', error);
+      setLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [orgId]);
 
 
   // ポーリング処理 (useCallbackでラップ)
@@ -512,9 +517,12 @@ const AdminPage = ({ user }) => {
 
     try {
       const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const idToken = user ? await user.getIdToken() : null;
+      const headers = {'Content-Type': 'application/json'};
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
       const response = await fetch(`${functionsUrl}/processPayment`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers,
         body: JSON.stringify({ orderId: order.id }),
       });
 
@@ -539,9 +547,12 @@ const AdminPage = ({ user }) => {
 
     try {
       const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
+      const idToken = user ? await user.getIdToken() : null;
+      const headers = {'Content-Type': 'application/json'};
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
       const response = await fetch(`${functionsUrl}/processRefund`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers,
         body: JSON.stringify({
           orderId: order.id,
           recipientEmail: order.userEmail,
