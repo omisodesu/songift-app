@@ -8,6 +8,7 @@ import { ref, uploadBytes } from "firebase/storage";
 import { db, functions, storage } from '../../lib/firebase';
 import { buildSimpleModePrompt } from '../../lib/prompts/simpleMode';
 import { buildProModePrompt } from '../../lib/prompts/proMode';
+import { QRCodeCanvas } from 'qrcode.react';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
@@ -23,6 +24,8 @@ const AdminPage = ({ user }) => {
 
   // 管理者向け署名URL管理
   const [adminSignedUrls, setAdminSignedUrls] = useState({});
+  // 永続URL管理（QRコード用）
+  const [adminPermanentUrls, setAdminPermanentUrls] = useState({});
 
   // 写真アップロード管理
   const [orderPhotos, setOrderPhotos] = useState({});         // { orderId: File[] }
@@ -573,6 +576,33 @@ const AdminPage = ({ user }) => {
   };
 
 
+  // 管理者向けフル動画の永続URL取得（QRコード用）
+  const handleGetAdminPermanentUrl = async (orderId) => {
+    try {
+      const getAdminFullPermanentUrl = httpsCallable(functions, "getAdminFullPermanentUrl");
+      const result = await getAdminFullPermanentUrl({ orderId });
+
+      setAdminPermanentUrls(prev => ({
+        ...prev,
+        [orderId]: result.data.permanentUrl
+      }));
+    } catch (error) {
+      console.error("永続URL取得エラー:", error);
+      alert("永続URL取得に失敗しました。\n\nエラー: " + error.message);
+    }
+  };
+
+  // QRコード画像をPNGでダウンロード
+  const handleDownloadQrCode = (orderId) => {
+    const canvas = document.getElementById(`qr-canvas-${orderId}`);
+    if (!canvas) return;
+    const url = canvas.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `qrcode_${orderId}.png`;
+    a.click();
+  };
+
   const b2bCount = orders.filter(o => o.plan === 'nursingHome').length;
   const b2cCount = orders.filter(o => o.plan !== 'nursingHome').length;
   const filteredOrders = orders.filter(order => {
@@ -899,7 +929,7 @@ const AdminPage = ({ user }) => {
                           >
                             ダウンロード 📥
                           </a>
-                          <p className="text-xs text-gray-500">※ URL有効期限: 20分</p>
+                          <p className="text-xs text-gray-500">※ URL有効期限: 3日</p>
                           {order.fullVideoAudioDurationSec && order.fullVideoDurationSec && (
                             <p className="text-xs text-gray-600 mt-2">
                               Audio: {order.fullVideoAudioDurationSec.toFixed(1)}s / Video: {order.fullVideoDurationSec.toFixed(1)}s
@@ -907,6 +937,42 @@ const AdminPage = ({ user }) => {
                           )}
                         </div>
                       )}
+                      {/* QRコード・永続URL */}
+                      <div className="mt-3 border-t pt-3">
+                        <button
+                          onClick={() => handleGetAdminPermanentUrl(order.id)}
+                          className="bg-green-500 text-white text-xs px-3 py-1 rounded hover:bg-green-600 mb-2 w-full"
+                        >
+                          QRコード取得
+                        </button>
+                        {adminPermanentUrls[order.id] && (
+                          <div className="text-center">
+                            <QRCodeCanvas
+                              id={`qr-canvas-${order.id}`}
+                              value={adminPermanentUrls[order.id]}
+                              size={160}
+                              level="M"
+                              marginSize={2}
+                            />
+                            <div className="flex gap-2 mt-2">
+                              <a
+                                href={adminPermanentUrls[order.id]}
+                                download={`birthday_song_full_${order.id}.mp4`}
+                                className="flex-1 bg-blue-500 text-white text-xs px-3 py-2 rounded hover:bg-blue-600 text-center"
+                              >
+                                動画DL
+                              </a>
+                              <button
+                                onClick={() => handleDownloadQrCode(order.id)}
+                                className="flex-1 bg-gray-500 text-white text-xs px-3 py-2 rounded hover:bg-gray-600"
+                              >
+                                QR画像DL
+                              </button>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-1">※ このURLは期限なし</p>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

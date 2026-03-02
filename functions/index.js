@@ -1286,24 +1286,94 @@ exports.getAdminFullSignedUrl = onCall({
       throw new Error("フル動画がまだ生成されていません");
     }
 
-    // 署名URL発行（有効時間: 20分）
+    // 署名URL発行（有効時間: 3日）
     const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
     const bucket = storage.bucket(bucketName);
 
+    const filename = `birthday_song_full_${orderId}.mp4`;
     const [signedUrl] = await bucket.file(order.fullVideoPath).getSignedUrl({
       version: "v4",
       action: "read",
-      expires: Date.now() + 20 * 60 * 1000, // 20分
+      expires: Date.now() + 3 * 24 * 60 * 60 * 1000, // 3日
+      responseDisposition: `attachment; filename="${filename}"`,
+      responseType: "video/mp4",
     });
 
     console.log(`[getAdminFullSignedUrl] Signed URL issued for: ${order.fullVideoPath}`);
 
     return {
       signedUrl: signedUrl,
-      expiresInSeconds: 1200,
+      expiresInSeconds: 259200,
     };
   } catch (error) {
     console.error(`[getAdminFullSignedUrl] Error for order ${orderId}:`, error);
+    throw new Error(error.message);
+  }
+});
+
+/**
+ * getAdminFullPermanentUrl - 管理者向けフル動画の永続URL取得（Callable Function）
+ *
+ * Firebase Storageのダウンロードトークンを使った期限なしURL。
+ * QRコード表示用。
+ *
+ * 入力: { orderId: string }
+ * 出力: { permanentUrl: string }
+ */
+exports.getAdminFullPermanentUrl = onCall({
+  cors: true,
+}, async (request) => {
+  const {orderId} = request.data;
+
+  if (!orderId) {
+    throw new Error("orderId is required");
+  }
+
+  console.log(`[getAdminFullPermanentUrl] Request for order: ${orderId}`);
+
+  try {
+    const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
+
+    if (!orderDoc.exists) {
+      throw new Error("注文が見つかりません");
+    }
+
+    const order = orderDoc.data();
+
+    if (!order.fullVideoPath) {
+      throw new Error("フル動画がまだ生成されていません");
+    }
+
+    const bucketName = `${process.env.GCLOUD_PROJECT}.firebasestorage.app`;
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file(order.fullVideoPath);
+
+    // メタデータからダウンロードトークンを取得
+    const [metadata] = await file.getMetadata();
+    let downloadToken = metadata.metadata && metadata.metadata.firebaseStorageDownloadTokens;
+
+    // トークンがなければ生成して設定
+    if (!downloadToken) {
+      downloadToken = crypto.randomUUID();
+      await file.setMetadata({
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+        },
+      });
+      console.log(`[getAdminFullPermanentUrl] Generated new download token for: ${order.fullVideoPath}`);
+    }
+
+    // 永続URL組み立て
+    const encodedPath = encodeURIComponent(order.fullVideoPath);
+    const permanentUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media&token=${downloadToken}`;
+
+    console.log(`[getAdminFullPermanentUrl] Permanent URL issued for: ${order.fullVideoPath}`);
+
+    return {
+      permanentUrl: permanentUrl,
+    };
+  } catch (error) {
+    console.error(`[getAdminFullPermanentUrl] Error for order ${orderId}:`, error);
     throw new Error(error.message);
   }
 });
