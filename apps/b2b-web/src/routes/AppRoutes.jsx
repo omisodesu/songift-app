@@ -21,25 +21,25 @@ const Loading = () => (
  * 認証済みユーザーのみアクセス可能なルートガード
  */
 const ProtectedRoute = ({ children }) => {
-  const { user, membership, loading } = useAuth();
+  const { user, membership, loading, supportSession } = useAuth();
 
   if (loading) return <Loading />;
   if (!user || !membership?.role) return <Navigate to="/admin/login" />;
 
-  return <div className="pt-16">{children}</div>;
+  return <div className={supportSession ? 'pt-24' : 'pt-16'}>{children}</div>;
 };
 
 /**
  * super_adminのみアクセス可能なルートガード
  */
 const SuperAdminRoute = ({ children }) => {
-  const { user, membership, loading, isSuperAdmin } = useAuth();
+  const { user, membership, loading, isSuperAdmin, supportSession } = useAuth();
 
   if (loading) return <Loading />;
   if (!user || !membership?.role) return <Navigate to="/admin/login" />;
   if (!isSuperAdmin()) return <Navigate to="/admin" />;
 
-  return <div className="pt-16">{children}</div>;
+  return <div className={supportSession ? 'pt-24' : 'pt-16'}>{children}</div>;
 };
 
 /**

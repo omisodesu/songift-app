@@ -629,26 +629,28 @@ const AdminPage = ({ user, orgId = null }) => {
       <div className="max-w-6xl mx-auto">
         <h1 className="text-3xl font-bold text-gray-800 mb-6">バースデーソングメーカー 管理画面</h1>
 
-        {/* フィルタボタン */}
-        <div className="flex gap-2 mb-6">
-          {[
-            { key: 'all', label: `すべて (${orders.length})` },
-            { key: 'b2b', label: `B2B 介護施設 (${b2bCount})` },
-            { key: 'b2c', label: `B2C (${b2cCount})` },
-          ].map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setOrderFilter(tab.key)}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                orderFilter === tab.key
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-700 hover:bg-gray-100'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {/* フィルタボタン（SuperAdminのみ表示） */}
+        {!orgId && (
+          <div className="flex gap-2 mb-6">
+            {[
+              { key: 'all', label: `すべて (${orders.length})` },
+              { key: 'b2b', label: `B2B 介護施設 (${b2bCount})` },
+              { key: 'b2c', label: `B2C (${b2cCount})` },
+            ].map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setOrderFilter(tab.key)}
+                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  orderFilter === tab.key
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 注文一覧 */}
         <div className="space-y-6">
@@ -658,12 +660,12 @@ const AdminPage = ({ user, orgId = null }) => {
               <div className="flex justify-between items-start border-b pb-4 mb-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                    <span className={`rounded-full text-xs font-bold ${
                       order.plan === 'nursingHome' ? 'bg-green-100 text-green-800' :
                       order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' :
                       'bg-pink-100 text-pink-800'
-                    }`}>
-                      {order.plan === 'nursingHome' ? '介護施設' : order.plan === 'simple' ? '魔法診断' : 'プロ'}
+                    } ${orgId ? 'w-3 h-3 inline-block' : 'px-3 py-1'}`}>
+                      {!orgId && (order.plan === 'nursingHome' ? '介護施設' : order.plan === 'simple' ? '魔法診断' : 'プロ')}
                     </span>
                     <span className="text-sm text-gray-500">{order.createdAt}</span>
                     <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -680,6 +682,16 @@ const AdminPage = ({ user, orgId = null }) => {
                       <p>💖 気持ち: {Array.isArray(order.targetFeeling) ? order.targetFeeling.join(", ") : order.targetFeeling}</p>
                       <p>💌 言葉: {order.magicWord}</p>
                       <p>✨ 魔法: {order.magicSpell}</p>
+                    </div>
+                  ) : order.plan === 'nursingHome' ? (
+                    <div className="mt-2 text-gray-700">
+                      <h3 className="text-xl font-bold mb-1">{order.targetName} 様</h3>
+                      <p className="text-xs text-gray-500 mb-2 font-mono">{order.id}</p>
+                      <p><span className="font-bold">性別:</span> {order.nhGender}</p>
+                      <p><span className="font-bold">ジャンル:</span> {order.nhGenre}</p>
+                      <p><span className="font-bold">季節:</span> {order.nhSeason}</p>
+                      <p><span className="font-bold">思い出:</span> {order.nhMemory}</p>
+                      <p><span className="font-bold">人柄:</span> {order.nhPersonality}</p>
                     </div>
                   ) : (
                     <div className="mt-2 text-gray-700">

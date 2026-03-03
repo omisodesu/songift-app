@@ -319,8 +319,17 @@ exports.createOrder = onRequest({
   try {
     const {plan, formData, email} = req.body;
 
-    // パラメータ検証
-    if (!plan || !formData || !email) {
+    // パラメータ検証（B2B=nursingHomeはemail不要）
+    if (!plan || !formData) {
+      res.status(400).json({
+        error: "必須パラメータが不足しています",
+        required: ["plan", "formData"],
+      });
+      return;
+    }
+
+    // B2C（simple/pro）はemail必須
+    if (plan !== "nursingHome" && !email) {
       res.status(400).json({
         error: "必須パラメータが不足しています",
         required: ["plan", "formData", "email"],
@@ -328,13 +337,15 @@ exports.createOrder = onRequest({
       return;
     }
 
-    // メールアドレスのフォーマット検証
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      res.status(400).json({
-        error: "有効なメールアドレスを入力してください",
-      });
-      return;
+    // メールアドレスのフォーマット検証（emailが提供された場合のみ）
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        res.status(400).json({
+          error: "有効なメールアドレスを入力してください",
+        });
+        return;
+      }
     }
 
     // レート制限チェック（1分間に3回まで）
@@ -364,7 +375,7 @@ exports.createOrder = onRequest({
       orderOrgId = orgId;
     }
 
-    console.log(`Creating order for: ${email}, plan: ${plan}${orderOrgId ? `, orgId: ${orderOrgId}` : ""}`);
+    console.log(`Creating order for: ${email || "(no email)"}, plan: ${plan}${orderOrgId ? `, orgId: ${orderOrgId}` : ""}`);
 
     // トークン生成（32バイト = 64文字のhex）
     const token = crypto.randomBytes(32).toString("hex");
@@ -376,7 +387,7 @@ exports.createOrder = onRequest({
     // Firestoreに注文を保存
     const orderData = {
       userId: null, // 一般ユーザーはnull
-      userEmail: email,
+      userEmail: email || null,
       plan: plan,
       ...formData,
       status: "waiting",

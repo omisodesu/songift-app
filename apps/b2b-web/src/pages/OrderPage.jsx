@@ -28,8 +28,6 @@ const OrderPage = () => {
 
   const [loading, setLoading] = useState(false);
   const [nameError, setNameError] = useState('');
-  const [email, setEmail] = useState('');
-  const [emailError, setEmailError] = useState('');
 
   const [formData, setFormData] = useState({
     targetName: '',       // Q1: 呼び名
@@ -59,18 +57,8 @@ const OrderPage = () => {
     setFormData({ ...formData, [name]: value });
   };
 
-  const validateEmail = (email) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    // バリデーション
-    if (!validateEmail(email)) {
-      setEmailError('有効なメールアドレスを入力してください');
-      return;
-    }
 
     if (nameError || !formData.targetName) {
       alert("お名前の入力を確認してください。");
@@ -96,7 +84,6 @@ const OrderPage = () => {
         body: JSON.stringify({
           plan: 'nursingHome',
           formData: formData,
-          email: email,
           orgId: orgId,
         })
       });
@@ -114,7 +101,7 @@ const OrderPage = () => {
       });
 
       // 成功メッセージ
-      alert(`注文を受け付けました！\n\n楽曲が完成しましたらメールでお知らせします。`);
+      alert('注文を受け付けました！');
       navigate('/');
     } catch (error) {
       console.error("注文エラー:", error);
@@ -130,32 +117,6 @@ const OrderPage = () => {
         <h2 className="text-2xl font-bold text-center mb-6">楽曲作成オーダー</h2>
 
         <form onSubmit={handleSubmit} className="space-y-8">
-
-          {/* メールアドレス入力 */}
-          <div className="bg-blue-50 p-5 rounded-lg border border-blue-100">
-            <label className="block font-bold text-gray-800 mb-2">
-              📧 メールアドレス <span className="text-red-500">*</span>
-            </label>
-            <p className="text-sm text-gray-500 mb-2">
-              完成通知をお送りします
-            </p>
-            <input
-              required
-              type="email"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                if (!validateEmail(e.target.value)) {
-                  setEmailError('有効なメールアドレスを入力してください');
-                } else {
-                  setEmailError('');
-                }
-              }}
-              className={`w-full border p-3 rounded ${emailError ? 'border-red-500' : ''}`}
-              placeholder="example@email.com"
-            />
-            {emailError && <p className="text-xs text-red-500 mt-1 font-bold">{emailError}</p>}
-          </div>
 
           {/* Q1. 呼び名 */}
           <div className="bg-amber-50 p-5 rounded-lg border border-amber-100">
