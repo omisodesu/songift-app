@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter, Link } from 'react-router-dom';
 import AppRoutes from './routes/AppRoutes';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import PointBalanceWidget from './components/PointBalanceWidget';
 
 // ---------------------------
 // ヘッダーコンポーネント（認証コンテキスト使用）
@@ -24,6 +25,16 @@ function AppHeader() {
     return '/admin/org-select';
   };
 
+  // ポイント履歴リンクの遷移先
+  const getPointHistoryLink = () => {
+    const orgForPoints = currentOrgId || (membership.orgIds?.length === 1 ? membership.orgIds[0] : null);
+    if (orgForPoints) return `/admin/org/${orgForPoints}/point-history`;
+    return '/point-history';
+  };
+
+  // PointBalanceWidget用のorgId
+  const widgetOrgId = currentOrgId || (membership.orgIds?.length === 1 ? membership.orgIds[0] : null);
+
   return (
     <header className="bg-white shadow-sm fixed top-0 w-full z-10">
       {/* サポートモードバナー */}
@@ -44,6 +55,11 @@ function AppHeader() {
           </Link>
         </div>
         <div className="flex items-center gap-4">
+          {widgetOrgId && (
+            <Link to={getPointHistoryLink()} className="hover:opacity-80 transition">
+              <PointBalanceWidget orgId={widgetOrgId} />
+            </Link>
+          )}
           {membership.role && (
             <span className="text-xs text-gray-400 bg-gray-50 px-2 py-0.5 rounded">
               {membership.role === 'super_admin' ? 'Super Admin' :

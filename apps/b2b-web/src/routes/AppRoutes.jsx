@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
 // 遅延読み込み
@@ -9,6 +9,7 @@ const AdminPage = lazy(() => import('../pages/admin/AdminPage'));
 const SuperAdminPage = lazy(() => import('../pages/admin/SuperAdminPage'));
 const OrgAdminPage = lazy(() => import('../pages/admin/OrgAdminPage'));
 const OrgSelectPage = lazy(() => import('../pages/admin/OrgSelectPage'));
+const PointHistoryPage = lazy(() => import('../pages/PointHistoryPage'));
 
 // ローディング表示
 const Loading = () => (
@@ -72,6 +73,14 @@ const RootRedirect = () => {
 };
 
 /**
+ * org別ポイント履歴ラッパー（URLパラメータからorgIdを渡す）
+ */
+const OrgPointHistory = () => {
+  const { orgId } = useParams();
+  return <PointHistoryPage orgId={orgId} />;
+};
+
+/**
  * アプリケーションのルート定義
  */
 const AppRoutes = () => {
@@ -105,6 +114,14 @@ const AppRoutes = () => {
         {/* org別管理画面 */}
         <Route path="/admin/org/:orgId" element={
           <ProtectedRoute><OrgAdminPage /></ProtectedRoute>
+        } />
+
+        {/* ポイント利用履歴 */}
+        <Route path="/point-history" element={
+          <ProtectedRoute><PointHistoryPage /></ProtectedRoute>
+        } />
+        <Route path="/admin/org/:orgId/point-history" element={
+          <ProtectedRoute><OrgPointHistory /></ProtectedRoute>
         } />
       </Routes>
     </Suspense>

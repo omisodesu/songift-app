@@ -251,66 +251,24 @@ const AdminPage = ({ user, orgId = null }) => {
     }
   };
 
-  // 2. Suno楽曲生成 (最新API仕様に対応)
+  // 2. Suno楽曲生成（サーバーサイド経由・ポイント制対応）
   const handleGenerateSong = async (order) => {
-    if (!SUNO_API_KEY) return alert("エラー：Suno APIキーが設定されていません。サーバーを再起動しましたか？");
     if (!order.generatedLyrics || !order.generatedPrompt) return alert("先に歌詞とプロンプトを生成してください");
-    if (!confirm("Suno APIで楽曲生成を開始しますか？（クレジットを消費します）")) return;
+    if (!confirm("楽曲生成を開始しますか？（ポイントを消費します）")) return;
 
     try {
-      // callbackUrlを環境に応じて切り替え（stg/prod判定）
-      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-      const isStg = projectId && projectId.includes("-stg");
-      const callbackBaseUrl = isStg
-        ? "https://birthday-song-app-stg.firebaseapp.com"
-        : "https://birthday-song-app.firebaseapp.com";
+      const startGeneration = httpsCallable(functions, 'startNursingHomeSongGeneration');
+      const result = await startGeneration({ orderId: order.id });
 
-      // 正しいエンドポイント: /api/v1/generate
-      const response = await fetch(`${SUNO_BASE_URL}/generate`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${SUNO_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          customMode: true,              // カスタムモード（歌詞指定）
-          prompt: order.generatedLyrics, // 歌詞
-          style: order.generatedPrompt,  // スタイル（旧tags）
-          title: "Happy Birthday",       // タイトル
-          instrumental: false,           // ボーカル有り
-          model: "V5",                   // 最新モデル
-          callBackUrl: `${callbackBaseUrl}/api/callback`
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API Error (${response.status}): ${errorText}`);
-      }
-
-      const result = await response.json();
-
-      // レスポンス構造: { code: 200, msg: "success", data: { taskId: "..." } }
-      if (result.code === 200 && result.data?.taskId) {
-        const taskId = result.data.taskId;
-
-        await updateDoc(doc(db, "orders", order.id), {
-          status: "generating_song",
-          sunoTaskId: taskId,
-          songGenerationStartedAt: serverTimestamp(),
-          sunoStatus: "PENDING",
-          sunoErrorCode: null,
-          sunoErrorMessage: null,
-          songLastPolledAt: serverTimestamp()
-        });
-        alert(`生成開始しました！(Task ID: ${taskId})\n完了まで自動で待機します...`);
+      if (result.data?.success) {
+        alert(`生成開始しました！(Task ID: ${result.data.taskId})\n完了まで自動で待機します...`);
       } else {
-        console.error("API Response:", result);
-        throw new Error(`予期しないレスポンス: ${result.msg || JSON.stringify(result)}`);
+        throw new Error('予期しないレスポンス');
       }
     } catch (e) {
       console.error(e);
-      alert(`Suno API呼び出しエラー: ${e.message}\n\n※「401」や「expired」の場合はAPIキーを再取得してください。`);
+      const msg = e.message || e.details || 'エラーが発生しました';
+      alert(`楽曲生成エラー: ${msg}`);
     }
   };
 
@@ -936,6 +894,8 @@ const AdminPage = ({ user, orgId = null }) => {
                   {order.fullVideoPath && (
                     <div className="mt-3 bg-white p-3 rounded border">
                       <p className="text-xs font-bold text-gray-700 mb-2">フル動画（1080x1920）</p>
+                      {!orgId && (
+                      <>
                       <button
                         onClick={() => handleGetAdminFullUrl(order.id)}
                         className="bg-purple-500 text-white text-xs px-3 py-1 rounded hover:bg-purple-600 mb-2 w-full"
@@ -959,6 +919,8 @@ const AdminPage = ({ user, orgId = null }) => {
                             </p>
                           )}
                         </div>
+                      )}
+                      </>
                       )}
                       {/* QRコード・永続URL */}
                       <div className="mt-3 border-t pt-3">
@@ -1000,6 +962,7 @@ const AdminPage = ({ user, orgId = null }) => {
                   )}
                 </div>
 
+                {!orgId && (
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-semibold mb-3">4. メール管理</h4>
 
@@ -1022,9 +985,11 @@ const AdminPage = ({ user, orgId = null }) => {
                     )}
                   </div>
                 </div>
+                )}
               </div>
 
               {/* Phase1: Paywall管理 */}
+              {!orgId && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                 {/* Paywall管理セクション */}
                 <div className="bg-yellow-50 p-4 rounded border border-yellow-200">
@@ -1072,6 +1037,7 @@ const AdminPage = ({ user, orgId = null }) => {
                   )}
                 </div>
               </div>
+              )}
             </div>
           ))}
         </div>

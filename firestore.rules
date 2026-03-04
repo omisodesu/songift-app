@@ -62,6 +62,30 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ポイント取引履歴（サブコレクション）
+    match /organizations/{orgId}/pointTransactions/{txnId} {
+      // 読み取り: org所属メンバー + super_admin
+      allow read: if hasOrgAccess(orgId);
+      // 書き込み: Cloud Functions経由のみ（append-only）
+      allow write: if false;
+    }
+
+    // ポイントプラン マスタ
+    match /pointPlans/{planId} {
+      // 読み取り: 認証済みユーザー
+      allow read: if isAuthenticated();
+      // 書き込み: super_adminのみ
+      allow write: if isSuperAdmin();
+    }
+
+    // サービス消費定義 マスタ
+    match /serviceConsumption/{serviceId} {
+      // 読み取り: 認証済みユーザー
+      allow read: if isAuthenticated();
+      // 書き込み: super_adminのみ
+      allow write: if isSuperAdmin();
+    }
+
     // =========================================================================
     // 既存コレクション（マルチテナント対応）
     // =========================================================================

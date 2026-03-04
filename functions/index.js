@@ -21,6 +21,8 @@ const COLLECTIONS = {
   ORGANIZATION_MEMBERS: 'organization_members',
   SUPPORT_SESSIONS: 'support_sessions',
   AUDIT_LOGS: 'audit_logs',
+  POINT_PLANS: 'pointPlans',
+  SERVICE_CONSUMPTION: 'serviceConsumption',
 };
 
 admin.initializeApp();
@@ -37,6 +39,8 @@ const organizationsRef = () => db.collection(COLLECTIONS.ORGANIZATIONS);
 const orgMembersRef = () => db.collection(COLLECTIONS.ORGANIZATION_MEMBERS);
 const supportSessionsRef = () => db.collection(COLLECTIONS.SUPPORT_SESSIONS);
 const auditLogsRef = () => db.collection(COLLECTIONS.AUDIT_LOGS);
+const pointPlansRef = () => db.collection(COLLECTIONS.POINT_PLANS);
+const serviceConsumptionRef = () => db.collection(COLLECTIONS.SERVICE_CONSUMPTION);
 const storage = new Storage();
 
 // =============================================================================
@@ -311,7 +315,7 @@ exports.createOrder = onRequest({
 
   if (req.method === "OPTIONS") {
     res.set("Access-Control-Allow-Methods", "POST");
-    res.set("Access-Control-Allow-Headers", "Content-Type");
+    res.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.status(204).send("");
     return;
   }
@@ -359,7 +363,7 @@ exports.createOrder = onRequest({
       return;
     }
 
-    // B2B注文（nursingHome）はorgId必須
+    // B2B注文（nursingHome）はorgId必須 + 認証・所属確認
     let orderOrgId = null;
     if (plan === "nursingHome") {
       const {orgId} = req.body;
@@ -367,6 +371,34 @@ exports.createOrder = onRequest({
         res.status(400).json({error: "B2B注文にはorgIdが必要です"});
         return;
       }
+
+      // B2BはAuthorization必須
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        res.status(401).json({error: "B2B注文には認証が必要です"});
+        return;
+      }
+
+      let decodedToken;
+      try {
+        decodedToken = await admin.auth().verifyIdToken(authHeader.split("Bearer ")[1]);
+      } catch (e) {
+        res.status(401).json({error: "無効な認証トークンです"});
+        return;
+      }
+
+      // organization_membersで所属確認
+      const memberDoc = await orgMembersRef().doc(decodedToken.uid).get();
+      if (!memberDoc.exists) {
+        res.status(403).json({error: "メンバーシップが見つかりません"});
+        return;
+      }
+      const memberData = memberDoc.data();
+      if (memberData.role !== "super_admin" && (!memberData.orgIds || !memberData.orgIds.includes(orgId))) {
+        res.status(403).json({error: "この組織へのアクセス権がありません"});
+        return;
+      }
+
       const orgDoc = await organizationsRef().doc(orgId).get();
       if (!orgDoc.exists || orgDoc.data().status !== "active") {
         res.status(400).json({error: "無効な組織IDです"});
@@ -3545,6 +3577,13 @@ exports.checkSunoStatusScheduled = onSchedule({
             lastError: "Song generation timeout",
           });
 
+          // B2Bポイントrelease
+          if (order.plan === "nursingHome" && order.orgId && order.pointReservation) {
+            const pr = order.pointReservation;
+            await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
+            console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for timed-out order ${orderId}`);
+          }
+
           // Slack通知
           const slackUrl = process.env.SLACK_WEBHOOK_URL;
           if (slackUrl) {
@@ -3587,6 +3626,13 @@ exports.checkSunoStatusScheduled = onSchedule({
           lastError: errorMessage || "Song generation failed",
         });
 
+        // B2Bポイントrelease
+        if (order.plan === "nursingHome" && order.orgId && order.pointReservation) {
+          const pr = order.pointReservation;
+          await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
+          console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for failed order ${orderId}`);
+        }
+
         const slackUrl = process.env.SLACK_WEBHOOK_URL;
         if (slackUrl) {
           await notifyAutomationError(orderId, "song", new Error(errorMessage || "Song generation failed"), slackUrl);
@@ -3618,6 +3664,13 @@ exports.checkSunoStatusScheduled = onSchedule({
               currentStep: null,
               automationStatus: "paused",
             });
+
+            // B2Bポイントconsume（reserve → 使用確定）
+            if (orderData.orgId && orderData.pointReservation) {
+              await consumePoints(orderData.orgId, orderData.pointReservation.amount, orderId, order.sunoTaskId);
+              console.log(`[checkSunoStatusScheduled] Consumed ${orderData.pointReservation.amount}pt for order ${orderId}`);
+            }
+
             console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - waiting for admin selection`);
           } else {
             // B2C: 自動でプレビュー生成ステップへ進む
@@ -3858,10 +3911,10 @@ exports.createOrganization = onCall({
  * inviteMember - メンバー招待/追加（super_adminのみ）
  *
  * Firebase Authに登録済みのユーザーを組織に追加する。
- * 未登録の場合はエラー（先にGoogleログインが必要）。
+ * 未登録の場合はメールで仮ユーザーを作成して招待する。
  *
  * 入力: { email: string, orgId: string, role?: 'org_admin' | 'org_member' }
- * 出力: { success: true, uid: string }
+ * 出力: { success: true, uid: string, created: boolean }
  */
 exports.inviteMember = onCall({
   cors: true,
@@ -3884,13 +3937,23 @@ exports.inviteMember = onCall({
     throw new HttpsError('not-found', '組織が見つかりません');
   }
 
-  // Firebase Authでユーザー検索
+  // Firebase Authでユーザー検索（未登録の場合は作成）
   let userRecord;
+  let created = false;
   try {
     userRecord = await admin.auth().getUserByEmail(email);
   } catch (e) {
-    throw new HttpsError('not-found',
-        'このメールアドレスのユーザーが見つかりません。先にGoogleログインが必要です。');
+    if (e.code === 'auth/user-not-found') {
+      // 未登録ユーザーの場合、Firebase Authにアカウントを作成
+      userRecord = await admin.auth().createUser({
+        email: email,
+        displayName: email.split('@')[0],
+      });
+      created = true;
+      console.log(`[inviteMember] Created new Firebase Auth user for ${email} (${userRecord.uid})`);
+    } else {
+      throw new HttpsError('internal', 'ユーザーの検索に失敗しました');
+    }
   }
 
   const memberRef = orgMembersRef().doc(userRecord.uid);
@@ -3932,7 +3995,7 @@ exports.inviteMember = onCall({
   });
 
   console.log(`[inviteMember] Added ${email} (${userRecord.uid}) to org ${orgId} as ${memberRole}`);
-  return {success: true, uid: userRecord.uid};
+  return {success: true, uid: userRecord.uid, created};
 });
 
 /**
@@ -4025,4 +4088,692 @@ exports.endSupportSession = onCall({
 
   console.log(`[endSupportSession] ${auth.token.email} ended support session ${sessionId}`);
   return {success: true};
+});
+
+// =============================================================================
+// ポイント制 - ヘルパー関数
+// =============================================================================
+
+/**
+ * サービス消費ポイント取得
+ * @param {string} serviceType - サービス種別（例: "song_generation"）
+ * @returns {Promise<number>} 消費ポイント数
+ */
+async function getServiceCost(serviceType) {
+  const doc = await serviceConsumptionRef().doc(serviceType).get();
+  if (!doc.exists) {
+    throw new HttpsError('not-found', `サービス定義 ${serviceType} が見つかりません`);
+  }
+  return doc.data().pointCost;
+}
+
+/**
+ * ポイント予約（reserve）
+ * free -> paid の順で予約。トランザクションで原子的に処理。
+ *
+ * @param {string} orgId
+ * @param {number} amount - 必要ポイント数
+ * @param {string} orderId
+ * @param {string} createdBy - 実行者UID
+ * @returns {Promise<{txnId: string, amountFree: number, amountPaid: number}>}
+ */
+async function reservePoints(orgId, amount, orderId, createdBy) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('pointTransactions').doc();
+
+  const result = await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) {
+      throw new HttpsError('not-found', '組織が見つかりません');
+    }
+
+    const pb = orgDoc.data().pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+    const totalAvailable = pb.freeAvailable + pb.paidAvailable;
+
+    if (totalAvailable < amount) {
+      throw new HttpsError('resource-exhausted', `ポイント残高不足です（残高: ${totalAvailable}pt、必要: ${amount}pt）`);
+    }
+
+    // free -> paid の順で消費
+    const fromFree = Math.min(pb.freeAvailable, amount);
+    const fromPaid = amount - fromFree;
+
+    const newBalance = {
+      ...pb,
+      freeAvailable: pb.freeAvailable - fromFree,
+      paidAvailable: pb.paidAvailable - fromPaid,
+      reserved: pb.reserved + amount,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {pointBalance: newBalance});
+
+    const balanceAfter = {
+      freeAvailable: newBalance.freeAvailable,
+      paidAvailable: newBalance.paidAvailable,
+      reserved: newBalance.reserved,
+    };
+
+    tx.set(txnRef, {
+      type: 'reserve',
+      amount,
+      amountFree: fromFree,
+      amountPaid: fromPaid,
+      balanceAfter,
+      orderId: orderId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy,
+    });
+
+    return {txnId: txnRef.id, amountFree: fromFree, amountPaid: fromPaid};
+  });
+
+  return result;
+}
+
+/**
+ * ポイント確定（consume）
+ * reserveされたポイントを使用済みに確定する。
+ * sunoTaskIdベースでの二重防止。
+ *
+ * @param {string} orgId
+ * @param {number} amount
+ * @param {string} orderId
+ * @param {string} sunoTaskId - 重複防止キー
+ * @returns {Promise<{txnId: string}|null>} 既に確定済みの場合null
+ */
+async function consumePoints(orgId, amount, orderId, sunoTaskId) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnCol = orgRef.collection('pointTransactions');
+
+  // 二重防止: 同じsunoTaskIdのconsumeが既にあるか確認
+  const existing = await txnCol
+    .where('type', '==', 'consume')
+    .where('orderId', '==', orderId)
+    .limit(1)
+    .get();
+
+  if (!existing.empty) {
+    console.log(`[consumePoints] Already consumed for order ${orderId}, skipping`);
+    return null;
+  }
+
+  const txnRef = txnCol.doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) return;
+
+    const pb = orgDoc.data().pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+
+    const newBalance = {
+      ...pb,
+      reserved: Math.max(0, pb.reserved - amount),
+      usedTotal: pb.usedTotal + amount,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {pointBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'consume',
+      amount,
+      amountFree: 0,
+      amountPaid: 0,
+      balanceAfter: {
+        freeAvailable: newBalance.freeAvailable,
+        paidAvailable: newBalance.paidAvailable,
+        reserved: newBalance.reserved,
+      },
+      orderId,
+      sunoTaskId: sunoTaskId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'system',
+    });
+  });
+
+  return {txnId: txnRef.id};
+}
+
+/**
+ * ポイント解放（release）
+ * 失敗/timeout時にreserveを元に戻す。
+ *
+ * @param {string} orgId
+ * @param {number} amount
+ * @param {string} orderId
+ * @param {number} amountFree - reserve時のfree分
+ * @param {number} amountPaid - reserve時のpaid分
+ * @param {string} [reservationTxnId] - reserve取引ID（重複判定キー）
+ * @returns {Promise<{txnId: string}|null>} 既にrelease済みの場合null
+ */
+async function releasePoints(orgId, amount, orderId, amountFree, amountPaid, reservationTxnId) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnCol = orgRef.collection('pointTransactions');
+
+  // 二重防止: reservationTxnIdベースで判定（未指定時はorderIdフォールバック）
+  let existing;
+  if (reservationTxnId) {
+    existing = await txnCol
+      .where('type', '==', 'release')
+      .where('reservationTxnId', '==', reservationTxnId)
+      .limit(1)
+      .get();
+  } else {
+    existing = await txnCol
+      .where('type', '==', 'release')
+      .where('orderId', '==', orderId)
+      .limit(1)
+      .get();
+  }
+
+  if (!existing.empty) {
+    console.log(`[releasePoints] Already released for order ${orderId} (resTxn=${reservationTxnId || 'N/A'}), skipping`);
+    return null;
+  }
+
+  const txnRef = txnCol.doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) return;
+
+    const pb = orgDoc.data().pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+
+    const newBalance = {
+      ...pb,
+      freeAvailable: pb.freeAvailable + amountFree,
+      paidAvailable: pb.paidAvailable + amountPaid,
+      reserved: Math.max(0, pb.reserved - amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {pointBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'release',
+      amount,
+      amountFree,
+      amountPaid,
+      balanceAfter: {
+        freeAvailable: newBalance.freeAvailable,
+        paidAvailable: newBalance.paidAvailable,
+        reserved: newBalance.reserved,
+      },
+      orderId,
+      reservationTxnId: reservationTxnId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'system',
+    });
+  });
+
+  return {txnId: txnRef.id};
+}
+
+// =============================================================================
+// ポイント制 - Callable Functions
+// =============================================================================
+
+/**
+ * getPointSummary - orgの残高・残曲数・契約期限を返す
+ *
+ * 入力: { orgId: string }
+ * 出力: { pointBalance, remainingSongs, contractEndDate, contractType }
+ */
+exports.getPointSummary = onCall({
+  cors: true,
+}, async (request) => {
+  requireAuth(request);
+  const {orgId} = request.data;
+
+  if (!orgId) {
+    throw new HttpsError('invalid-argument', 'orgIdは必須です');
+  }
+
+  await requireOrgAccess(request, orgId);
+
+  const orgDoc = await organizationsRef().doc(orgId).get();
+  if (!orgDoc.exists) {
+    throw new HttpsError('not-found', '組織が見つかりません');
+  }
+
+  const orgData = orgDoc.data();
+  const pb = orgData.pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+  // reservePoints で既に freeAvailable/paidAvailable を減算済みのため、reserved を再控除しない
+  const available = pb.freeAvailable + pb.paidAvailable;
+
+  // サービスコスト取得
+  let songCost = 500;
+  try {
+    songCost = await getServiceCost('song_generation');
+  } catch (e) {
+    // マスタ未投入時はデフォルト500
+  }
+
+  const remainingSongs = Math.floor(Math.max(0, available) / songCost);
+
+  return {
+    pointBalance: pb,
+    available,
+    remainingSongs,
+    songCost,
+    contractType: orgData.contractType || null,
+    contractEndDate: orgData.contractEndDate || null,
+    contractStartDate: orgData.contractStartDate || null,
+    autoRenew: orgData.autoRenew || false,
+  };
+});
+
+/**
+ * listPointTransactions - ポイント取引履歴
+ *
+ * 入力: { orgId, type?, pageSize?, cursor? }
+ * 出力: { transactions, nextCursor }
+ */
+exports.listPointTransactions = onCall({
+  cors: true,
+}, async (request) => {
+  requireAuth(request);
+  const {orgId, type, pageSize, cursor} = request.data;
+
+  if (!orgId) {
+    throw new HttpsError('invalid-argument', 'orgIdは必須です');
+  }
+
+  await requireOrgAccess(request, orgId);
+
+  const limit = Math.min(pageSize || 20, 100);
+  const txnCol = organizationsRef().doc(orgId).collection('pointTransactions');
+
+  let q = txnCol.orderBy('createdAt', 'desc');
+
+  if (type) {
+    q = q.where('type', '==', type);
+  }
+
+  if (cursor) {
+    const cursorDoc = await txnCol.doc(cursor).get();
+    if (cursorDoc.exists) {
+      q = q.startAfter(cursorDoc);
+    }
+  }
+
+  q = q.limit(limit + 1);
+
+  const snapshot = await q.get();
+  const docs = snapshot.docs;
+
+  const hasMore = docs.length > limit;
+  const transactions = docs.slice(0, limit).map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+    createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+  }));
+
+  return {
+    transactions,
+    nextCursor: hasMore ? docs[limit - 1].id : null,
+  };
+});
+
+/**
+ * grantTrialPoints - トライアルポイント付与（super_adminのみ）
+ *
+ * 入力: { orgId, amount, reason }
+ * 出力: { success, txnId }
+ */
+exports.grantTrialPoints = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {orgId, amount, reason} = request.data;
+
+  if (!orgId || !amount || amount <= 0) {
+    throw new HttpsError('invalid-argument', 'orgIdと正の数のamountは必須です');
+  }
+
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('pointTransactions').doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) {
+      throw new HttpsError('not-found', '組織が見つかりません');
+    }
+
+    const orgData = orgDoc.data();
+    const pb = orgData.pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+
+    const newBalance = {
+      ...pb,
+      freeAvailable: pb.freeAvailable + amount,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {pointBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'grant',
+      amount,
+      amountFree: amount,
+      amountPaid: 0,
+      balanceAfter: {
+        freeAvailable: newBalance.freeAvailable,
+        paidAvailable: newBalance.paidAvailable,
+        reserved: newBalance.reserved,
+      },
+      description: reason || 'トライアルポイント付与',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: auth.uid,
+    });
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'grant_trial_points',
+    targetOrgId: orgId,
+    targetResource: `organizations/${orgId}/pointTransactions/${txnRef.id}`,
+    meta: {amount, reason: reason || 'トライアルポイント付与'},
+  });
+
+  console.log(`[grantTrialPoints] Granted ${amount}pt to org ${orgId} by ${auth.token.email}`);
+  return {success: true, txnId: txnRef.id};
+});
+
+/**
+ * startNursingHomeSongGeneration - B2B楽曲生成開始（ポイント制対応）
+ *
+ * 認証・orgアクセス・契約有効期限・残高チェック後、
+ * reserve記録→Suno生成開始→order.status = generating_song
+ *
+ * 入力: { orderId }
+ * 出力: { success, taskId }
+ */
+exports.startNursingHomeSongGeneration = onCall({
+  cors: true,
+  secrets: ["SUNO_API_KEY", "APP_ENV"],
+}, async (request) => {
+  const auth = requireAuth(request);
+  const {orderId} = request.data;
+
+  if (!orderId) {
+    throw new HttpsError('invalid-argument', 'orderIdは必須です');
+  }
+
+  // 注文取得・検証
+  const orderRef = db.collection('orders').doc(orderId);
+  const orderDoc = await orderRef.get();
+
+  if (!orderDoc.exists) {
+    throw new HttpsError('not-found', '注文が見つかりません');
+  }
+
+  const order = orderDoc.data();
+
+  if (order.plan !== 'nursingHome') {
+    throw new HttpsError('failed-precondition', 'B2B注文ではありません');
+  }
+
+  if (!order.orgId) {
+    throw new HttpsError('failed-precondition', '注文にorgIdが設定されていません');
+  }
+
+  // orgアクセス確認
+  await requireOrgAccess(request, order.orgId);
+
+  // 歌詞・プロンプト生成済みか確認（ロック取得前に軽量チェック）
+  if (!order.generatedLyrics || !order.generatedPrompt) {
+    throw new HttpsError('failed-precondition', '先に歌詞とプロンプトを生成してください');
+  }
+
+  // トランザクションで軽量ロックを取得し、状態を原子的に検証
+  // stale lock ガード: 5分以上前のロックは無効とみなす
+  const STALE_LOCK_MS = 5 * 60 * 1000;
+  await db.runTransaction(async (tx) => {
+    const freshDoc = await tx.get(orderRef);
+    const freshOrder = freshDoc.data();
+
+    if (freshOrder.status === 'generating_song') {
+      throw new HttpsError('already-exists', '既に楽曲生成中です');
+    }
+    if (freshOrder.generatedSongs && freshOrder.generatedSongs.length > 0) {
+      throw new HttpsError('already-exists', '既に楽曲が生成済みです');
+    }
+    if (freshOrder.generationLock) {
+      const lockAt = freshOrder.generationLockAt?.toDate?.();
+      if (lockAt && (Date.now() - lockAt.getTime()) < STALE_LOCK_MS) {
+        throw new HttpsError('already-exists', '他のリクエストが処理中です');
+      }
+      // stale lock → 上書き可
+    }
+
+    tx.update(orderRef, {
+      generationLock: true,
+      generationLockAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  // ロック取得成功 — 以降の失敗時は必ずロック解除する
+  let reservation = null;
+  let songCost = 500;
+  try {
+    // 契約有効期限チェック
+    const orgDoc = await organizationsRef().doc(order.orgId).get();
+    const orgData = orgDoc.data();
+
+    if (orgData.contractEndDate) {
+      const endDate = orgData.contractEndDate.toDate ? orgData.contractEndDate.toDate() : new Date(orgData.contractEndDate);
+      if (endDate < new Date()) {
+        throw new HttpsError('failed-precondition', '契約期限が切れています。契約を更新してください。');
+      }
+    }
+
+    // サービスコスト取得
+    try {
+      songCost = await getServiceCost('song_generation');
+    } catch (e) {
+      // マスタ未投入時はデフォルト500
+    }
+
+    // ポイント予約
+    reservation = await reservePoints(order.orgId, songCost, orderId, auth.uid);
+
+    // 予約情報をorderに保存（release時に使う）
+    await orderRef.update({
+      pointReservation: {
+        txnId: reservation.txnId,
+        amount: songCost,
+        amountFree: reservation.amountFree,
+        amountPaid: reservation.amountPaid,
+      },
+    });
+  } catch (e) {
+    // ロック解除（reserveが成功していればrelease）
+    if (reservation) {
+      await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+    }
+    await orderRef.update({
+      generationLock: false,
+      generationLockAt: admin.firestore.FieldValue.delete(),
+      pointReservation: admin.firestore.FieldValue.delete(),
+    });
+    throw e;
+  }
+
+  // Suno API呼び出し
+  const sunoApiKey = process.env.SUNO_API_KEY;
+  if (!sunoApiKey) {
+    // APIキー未設定時はreserveをrelease + ロック解除
+    await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+    await orderRef.update({
+      generationLock: false,
+      generationLockAt: admin.firestore.FieldValue.delete(),
+      pointReservation: admin.firestore.FieldValue.delete(),
+    });
+    throw new HttpsError('internal', 'SUNO_API_KEYが設定されていません');
+  }
+
+  const appEnv = process.env.APP_ENV || "prod";
+  const callbackBaseUrl = appEnv === "prod"
+    ? "https://birthday-song-app.firebaseapp.com"
+    : "https://birthday-song-app-stg.firebaseapp.com";
+
+  let taskId;
+  try {
+    const response = await axios.post(
+      "https://api.sunoapi.org/api/v1/generate",
+      {
+        customMode: true,
+        prompt: order.generatedLyrics,
+        style: order.generatedPrompt,
+        title: "Happy Birthday",
+        instrumental: false,
+        model: "V5",
+        callBackUrl: `${callbackBaseUrl}/api/callback`,
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${sunoApiKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 60000,
+      }
+    );
+
+    if (response.data.code !== 200 || !response.data.data?.taskId) {
+      throw new Error(`Suno API error: ${response.data.msg || "Unknown error"}`);
+    }
+
+    taskId = response.data.data.taskId;
+  } catch (e) {
+    // Suno呼び出し失敗時はreserveをrelease + ロック解除
+    await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+    await orderRef.update({
+      generationLock: false,
+      generationLockAt: admin.firestore.FieldValue.delete(),
+      pointReservation: admin.firestore.FieldValue.delete(),
+    });
+    console.error(`[startNursingHomeSongGeneration] Suno API failed for order ${orderId}:`, e.message);
+    throw new HttpsError('internal', `楽曲生成APIの呼び出しに失敗しました: ${e.message}`);
+  }
+
+  // Firestore更新（ロック解除 + ステータス遷移を一括）
+  await orderRef.update({
+    status: "generating_song",
+    sunoTaskId: taskId,
+    songGenerationStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+    sunoStatus: "PENDING",
+    sunoErrorCode: null,
+    sunoErrorMessage: null,
+    songLastPolledAt: admin.firestore.FieldValue.serverTimestamp(),
+    generationLock: false,
+    generationLockAt: admin.firestore.FieldValue.delete(),
+  });
+
+  console.log(`[startNursingHomeSongGeneration] Started for order ${orderId}, taskId: ${taskId}, cost: ${songCost}pt`);
+  return {success: true, taskId};
+});
+
+// =============================================================================
+// ポイント制 - 失効バッチ
+// =============================================================================
+
+/**
+ * expirePoints - 契約期限切れorgのポイント失効（JST日次）
+ */
+exports.expirePoints = onSchedule({
+  schedule: "0 1 * * *",
+  timeZone: "Asia/Tokyo",
+}, async (event) => {
+  console.log('[expirePoints] Starting daily point expiration check');
+
+  const now = new Date();
+
+  // contractEndDate <= now かつ残高 > 0 のorgを検索
+  const orgsSnapshot = await organizationsRef()
+    .where('contractEndDate', '<=', now)
+    .get();
+
+  if (orgsSnapshot.empty) {
+    console.log('[expirePoints] No expired organizations found');
+    return;
+  }
+
+  let expiredCount = 0;
+
+  for (const orgDoc of orgsSnapshot.docs) {
+    const orgData = orgDoc.data();
+    const pb = orgData.pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+    const totalRemaining = pb.freeAvailable + pb.paidAvailable;
+
+    if (totalRemaining <= 0) continue;
+
+    const orgId = orgDoc.id;
+    const txnCol = orgDoc.ref.collection('pointTransactions');
+
+    await db.runTransaction(async (tx) => {
+      const freshOrg = await tx.get(orgDoc.ref);
+      const freshPb = freshOrg.data().pointBalance || {freeAvailable: 0, paidAvailable: 0, reserved: 0, usedTotal: 0, expiredTotal: 0};
+
+      const freeExpire = freshPb.freeAvailable;
+      const paidExpire = freshPb.paidAvailable;
+      const totalExpire = freeExpire + paidExpire;
+
+      if (totalExpire <= 0) return;
+
+      // free失効記録
+      if (freeExpire > 0) {
+        const freeTxnRef = txnCol.doc();
+        tx.set(freeTxnRef, {
+          type: 'expire',
+          amount: freeExpire,
+          amountFree: freeExpire,
+          amountPaid: 0,
+          balanceAfter: {
+            freeAvailable: 0,
+            paidAvailable: freshPb.paidAvailable,
+            reserved: freshPb.reserved,
+          },
+          description: '契約期限切れによるfreeポイント失効',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdBy: 'system',
+        });
+      }
+
+      // paid失効記録
+      if (paidExpire > 0) {
+        const paidTxnRef = txnCol.doc();
+        tx.set(paidTxnRef, {
+          type: 'expire',
+          amount: paidExpire,
+          amountFree: 0,
+          amountPaid: paidExpire,
+          balanceAfter: {
+            freeAvailable: 0,
+            paidAvailable: 0,
+            reserved: freshPb.reserved,
+          },
+          description: '契約期限切れによるpaidポイント失効',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          createdBy: 'system',
+        });
+      }
+
+      tx.update(orgDoc.ref, {
+        pointBalance: {
+          ...freshPb,
+          freeAvailable: 0,
+          paidAvailable: 0,
+          expiredTotal: (freshPb.expiredTotal || 0) + totalExpire,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+      });
+    });
+
+    console.log(`[expirePoints] Expired ${totalRemaining}pt for org ${orgId}`);
+    expiredCount++;
+  }
+
+  console.log(`[expirePoints] Completed. ${expiredCount} organizations processed`);
 });
