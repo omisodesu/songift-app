@@ -111,3 +111,15 @@ export const NH_PERSONALITIES = [
   { label: "😂 ユーモアがあって面白い", value: "ユーモアがあって面白い" },
   { label: "📚 好奇心旺盛", value: "好奇心旺盛" },
 ];
+
+// サンプル試聴用YouTube動画ID（性別_ジャンル → YouTube動画ID）
+export const SAMPLE_VIDEOS = {
+  '男性_演歌': 'YGS9dcdXObY',
+  '女性_演歌': 'Lim_qU4LMNw',
+  '男性_昭和歌謡': 'dl00FLGVY_Y',
+  '女性_昭和歌謡': 'lxhIb6-dsKs',
+  '男性_フォークソング': 'VlT9g4NYIXY',
+  '女性_フォークソング': '6rqHscm_jbQ',
+  '男性_ジャズ': 'LDfygLBHCuc',
+  '女性_ジャズ': '4ToaMQ8gSrU',
+};

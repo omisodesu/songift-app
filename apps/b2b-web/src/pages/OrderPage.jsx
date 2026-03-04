@@ -8,6 +8,7 @@ import {
   NH_SEASONS,
   NH_MEMORIES,
   NH_PERSONALITIES,
+  SAMPLE_VIDEOS,
 } from '../lib/constants';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -28,6 +29,9 @@ const OrderPage = () => {
 
   const [loading, setLoading] = useState(false);
   const [nameError, setNameError] = useState('');
+  const [showQ2Sample, setShowQ2Sample] = useState(false);
+  const [showQ3SampleMale, setShowQ3SampleMale] = useState(false);
+  const [showQ3SampleFemale, setShowQ3SampleFemale] = useState(false);
 
   const [formData, setFormData] = useState({
     targetName: '',       // Q1: 呼び名
@@ -141,7 +145,7 @@ const OrderPage = () => {
             <label className="block font-bold text-gray-800 mb-2">
               🎵 Q2. 歌い手の性別は？ <span className="text-red-500">*</span>
             </label>
-            <p className="text-sm text-gray-500 mb-2">どちらの声で歌ってほしいですか？</p>
+            <p className="text-sm text-gray-500 mb-2">どちらの声で歌ってほしいですか？（選択するとサンプル曲を試聴できます）</p>
             <div className="space-y-2">
               {NH_GENDERS.map((g) => (
                 <label key={g.value} className="flex items-center space-x-2 cursor-pointer">
@@ -149,7 +153,7 @@ const OrderPage = () => {
                     type="radio"
                     name="nhGender"
                     value={g.value}
-                    onChange={handleChange}
+                    onChange={(e) => { handleChange(e); setShowQ2Sample(false); }}
                     required
                     className="form-radio text-amber-500"
                   />
@@ -157,6 +161,29 @@ const OrderPage = () => {
                 </label>
               ))}
             </div>
+            {formData.nhGender && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowQ2Sample(!showQ2Sample)}
+                  className="text-sm text-amber-700 underline hover:text-amber-900 transition"
+                >
+                  {showQ2Sample ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（演歌・${formData.nhGender}）`}
+                </button>
+                {showQ2Sample && (
+                  <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
+                    <iframe
+                      width="100%"
+                      height="100%"
+                      src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`${formData.nhGender}_演歌`]}`}
+                      title="サンプル曲（演歌）"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Q3. 曲の雰囲気 */}
@@ -164,7 +191,7 @@ const OrderPage = () => {
             <label className="block font-bold text-gray-800 mb-2">
               🎼 Q3. 曲の雰囲気は？ <span className="text-red-500">*</span>
             </label>
-            <p className="text-sm text-gray-500 mb-2">どんな音楽で祝福しますか？</p>
+            <p className="text-sm text-gray-500 mb-2">どんな音楽で祝福しますか？（各ジャンルのサンプルを試聴できます）</p>
             <div className="space-y-2">
               {NH_GENRES.map((g) => (
                 <label key={g.value} className="flex items-center space-x-2 cursor-pointer">
@@ -172,7 +199,7 @@ const OrderPage = () => {
                     type="radio"
                     name="nhGenre"
                     value={g.value}
-                    onChange={handleChange}
+                    onChange={(e) => { handleChange(e); setShowQ3SampleMale(false); setShowQ3SampleFemale(false); }}
                     required
                     className="form-radio text-amber-500"
                   />
@@ -180,6 +207,48 @@ const OrderPage = () => {
                 </label>
               ))}
             </div>
+            {formData.nhGenre && (
+              <div className="mt-3 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowQ3SampleMale(!showQ3SampleMale); setShowQ3SampleFemale(false); }}
+                  className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
+                >
+                  {showQ3SampleMale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・男性）`}
+                </button>
+                {showQ3SampleMale && (
+                  <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
+                    <iframe
+                      width="100%"
+                      height="100%"
+                      src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`男性_${formData.nhGenre}`]}`}
+                      title={`サンプル曲（${formData.nhGenre}・男性）`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => { setShowQ3SampleFemale(!showQ3SampleFemale); setShowQ3SampleMale(false); }}
+                  className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
+                >
+                  {showQ3SampleFemale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・女性）`}
+                </button>
+                {showQ3SampleFemale && (
+                  <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
+                    <iframe
+                      width="100%"
+                      height="100%"
+                      src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`女性_${formData.nhGenre}`]}`}
+                      title={`サンプル曲（${formData.nhGenre}・女性）`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Q4. 生まれた季節 */}
