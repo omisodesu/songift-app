@@ -3206,6 +3206,7 @@ async function processSongStep(orderRef, order, orderId) {
       title: "Happy Birthday",
       instrumental: false,
       model: "V5",
+      weirdnessConstraint: 0.70,
       callBackUrl: `${callbackBaseUrl}/api/callback`,
     },
     {
@@ -4630,6 +4631,7 @@ exports.startNursingHomeSongGeneration = onCall({
         title: "Happy Birthday",
         instrumental: false,
         model: "V5",
+        weirdnessConstraint: 0.70,
         callBackUrl: `${callbackBaseUrl}/api/callback`,
       },
       {
