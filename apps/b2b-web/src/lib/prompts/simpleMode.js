@@ -133,7 +133,7 @@ ${PRE_CHORUS_GUIDELINES}
 【出力フォーマット (JSON)】
 必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
 {
-  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "lyrics": "[Chorus]\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\n[Verse]\\n(Q4から創作した自然な歌詞)\\n[Pre-Chorus]\\n(Q5から創作した自然な歌詞)\\n[Final Chorus]\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}",
   "sunoPrompt": "happy birthday | (Q2から変換したジャンル) | (Q2から変換したBPM) | key: (Q2から変換したKey) | (Q2から変換した楽器), clap | Japanese (Q3から決定したvocal) vocal | #birthday #upbeat #groovy (Q5から変換した追加タグ)"
 }
   `.trim();

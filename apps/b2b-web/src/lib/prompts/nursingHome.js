@@ -255,8 +255,8 @@ Q6. この方の人柄で当てはまるものは?: ${order.nhPersonality}
 ## ■ Chorus / サビ(明るく温かいパート)
 **Q3(呼び名)を使った祝福メッセージ**
 
-happy birthday ${order.targetName}
-happy birthday ${order.targetName}
+ハッピバースデー ${order.targetName}
+ハッピバースデー ${order.targetName}
 
 ---
 
@@ -306,7 +306,7 @@ ${personalityTagsText}
 【出力フォーマット (JSON)】
 必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
 {
-  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4の8パターンから1つ選択 + Q5から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Pre-Chorus]\\n(Q6から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
+  "lyrics": "[Chorus]\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\n[Verse]\\n(Q4の8パターンから1つ選択 + Q5から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Pre-Chorus]\\n(Q6から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Chorus]\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}\\n[Final Chorus]\\nハッピバースデー ${order.targetName}\\nハッピバースデー ${order.targetName}",
   "sunoPrompt": "happy birthday | (ジャンル) | (BPM) bpm | key: (キー) | 3/4 waltz rhythm | (楽器) | Japanese (vocal性別) vocal | (ボーカルスタイル) | #birthday #nostalgic #emotional #upbeat #1min (Q6の追加タグ)"
 }
 
@@ -327,7 +327,7 @@ ${personalityTagsText}
 - Verse/Pre-Chorusはそれぞれ25〜30文字、2行で1つの文章になるように
 - 年配者に響く、人生の重みを感じる言葉選び
 - 哀愁と温かさが共存する雰囲気
-- Chorusは4回繰り返し(happy birthdayを4回)
+- Chorusは4回繰り返し(ハッピバースデーを4回)
 
 上記のルールに従って、JSON形式で出力してください。
   `.trim();
