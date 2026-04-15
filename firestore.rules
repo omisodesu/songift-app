@@ -62,11 +62,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // ポイント取引履歴（サブコレクション）
+    // ポイント取引履歴（サブコレクション・旧）
     match /organizations/{orgId}/pointTransactions/{txnId} {
       // 読み取り: org所属メンバー + super_admin
       allow read: if hasOrgAccess(orgId);
       // 書き込み: Cloud Functions経由のみ（append-only）
+      allow write: if false;
+    }
+
+    // 請求取引履歴（サブコレクション・曲数制）
+    match /organizations/{orgId}/billingTransactions/{txnId} {
+      // 読み取り: org所属メンバー + super_admin
+      allow read: if hasOrgAccess(orgId);
+      // 書き込み: Cloud Functions経由のみ
       allow write: if false;
     }
 

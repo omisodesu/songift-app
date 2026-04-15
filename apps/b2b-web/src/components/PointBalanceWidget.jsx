@@ -1,13 +1,11 @@
 import { useState, useEffect } from 'react';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../lib/firebase';
-import { useAuth } from '../contexts/AuthContext';
 
 /**
- * ポイント残高ウィジェット（ヘッダー表示用）
+ * 残曲ウィジェット（ヘッダー表示用）
  */
 const PointBalanceWidget = ({ orgId }) => {
-  const { isSuperAdmin } = useAuth();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -19,8 +17,8 @@ const PointBalanceWidget = ({ orgId }) => {
 
     const fetchSummary = async () => {
       try {
-        const getPointSummary = httpsCallable(functions, 'getPointSummary');
-        const result = await getPointSummary({ orgId });
+        const getBillingSummary = httpsCallable(functions, 'getOrgBillingSummary');
+        const result = await getBillingSummary({ orgId });
         setSummary(result.data);
       } catch (e) {
         console.error('[PointBalanceWidget] Failed to fetch:', e);
@@ -34,14 +32,16 @@ const PointBalanceWidget = ({ orgId }) => {
 
   if (loading || !summary) return null;
 
-  const { available, remainingSongs, contractEndDate } = summary;
-  const isLow = available <= 1000 && available > 0;
-  const isEmpty = available <= 0;
+  const { availableSongs, reservedSongs, contract } = summary;
+  const isLow = availableSongs <= 3 && availableSongs > 0;
+  const isEmpty = availableSongs <= 0;
 
   // 契約期限の表示
   let endDateStr = null;
-  if (contractEndDate) {
-    const d = contractEndDate.toDate ? contractEndDate.toDate() : new Date(contractEndDate._seconds ? contractEndDate._seconds * 1000 : contractEndDate);
+  if (contract?.endsAt) {
+    const d = contract.endsAt.toDate
+      ? contract.endsAt.toDate()
+      : new Date(contract.endsAt._seconds ? contract.endsAt._seconds * 1000 : contract.endsAt);
     endDateStr = d.toLocaleDateString('ja-JP');
   }
 
@@ -52,11 +52,13 @@ const PointBalanceWidget = ({ orgId }) => {
       'bg-blue-50 text-blue-700'
     }`}>
       <span className="font-bold">
-        残高: {available.toLocaleString()}pt
+        残り{availableSongs}曲
       </span>
-      <span className="text-xs">
-        (残り{remainingSongs}曲)
-      </span>
+      {reservedSongs > 0 && (
+        <span className="text-xs">
+          (生成中: {reservedSongs}曲)
+        </span>
+      )}
       {endDateStr && (
         <span className="text-xs text-gray-500">
           期限: {endDateStr}
@@ -64,7 +66,7 @@ const PointBalanceWidget = ({ orgId }) => {
       )}
       {isEmpty && (
         <span className="text-xs font-bold text-red-600 animate-pulse">
-          ポイント不足
+          残曲なし
         </span>
       )}
       {isLow && !isEmpty && (

@@ -3578,11 +3578,16 @@ exports.checkSunoStatusScheduled = onSchedule({
             lastError: "Song generation timeout",
           });
 
-          // B2Bポイントrelease
-          if (order.plan === "nursingHome" && order.orgId && order.pointReservation) {
-            const pr = order.pointReservation;
-            await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
-            console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for timed-out order ${orderId}`);
+          // B2B曲数release（新ロジック: songReservation、旧ロジック: pointReservation）
+          if (order.plan === "nursingHome" && order.orgId) {
+            if (order.songReservation) {
+              await releaseSong(order.orgId, orderId, order.songReservation.txnId);
+              console.log(`[checkSunoStatusScheduled] Released 1 song for timed-out order ${orderId}`);
+            } else if (order.pointReservation) {
+              const pr = order.pointReservation;
+              await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
+              console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for timed-out order ${orderId} (legacy)`);
+            }
           }
 
           // Slack通知
@@ -3627,11 +3632,16 @@ exports.checkSunoStatusScheduled = onSchedule({
           lastError: errorMessage || "Song generation failed",
         });
 
-        // B2Bポイントrelease
-        if (order.plan === "nursingHome" && order.orgId && order.pointReservation) {
-          const pr = order.pointReservation;
-          await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
-          console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for failed order ${orderId}`);
+        // B2B曲数release（新ロジック: songReservation、旧ロジック: pointReservation）
+        if (order.plan === "nursingHome" && order.orgId) {
+          if (order.songReservation) {
+            await releaseSong(order.orgId, orderId, order.songReservation.txnId);
+            console.log(`[checkSunoStatusScheduled] Released 1 song for failed order ${orderId}`);
+          } else if (order.pointReservation) {
+            const pr = order.pointReservation;
+            await releasePoints(order.orgId, pr.amount, orderId, pr.amountFree, pr.amountPaid, pr.txnId);
+            console.log(`[checkSunoStatusScheduled] Released ${pr.amount}pt for failed order ${orderId} (legacy)`);
+          }
         }
 
         const slackUrl = process.env.SLACK_WEBHOOK_URL;
@@ -3666,10 +3676,15 @@ exports.checkSunoStatusScheduled = onSchedule({
               automationStatus: "paused",
             });
 
-            // B2Bポイントconsume（reserve → 使用確定）
-            if (orderData.orgId && orderData.pointReservation) {
-              await consumePoints(orderData.orgId, orderData.pointReservation.amount, orderId, order.sunoTaskId);
-              console.log(`[checkSunoStatusScheduled] Consumed ${orderData.pointReservation.amount}pt for order ${orderId}`);
+            // B2B曲数consume（新ロジック: songReservation、旧ロジック: pointReservation）
+            if (orderData.orgId) {
+              if (orderData.songReservation) {
+                await consumeSong(orderData.orgId, orderId, order.sunoTaskId);
+                console.log(`[checkSunoStatusScheduled] Consumed 1 song for order ${orderId}`);
+              } else if (orderData.pointReservation) {
+                await consumePoints(orderData.orgId, orderData.pointReservation.amount, orderId, order.sunoTaskId);
+                console.log(`[checkSunoStatusScheduled] Consumed ${orderData.pointReservation.amount}pt for order ${orderId} (legacy)`);
+              }
             }
 
             console.log(`[checkSunoStatusScheduled] Song generated for order ${orderId} - waiting for admin selection`);
@@ -4312,6 +4327,193 @@ async function releasePoints(orgId, amount, orderId, amountFree, amountPaid, res
 }
 
 // =============================================================================
+// 曲数制 - ヘルパー関数
+// =============================================================================
+
+/**
+ * 曲予約（reserve）- 1曲分を予約する
+ * トランザクションで原子的に処理。
+ *
+ * @param {string} orgId - 組織ID
+ * @param {string} orderId - 注文ID
+ * @param {string} createdBy - 実行者UID
+ * @returns {Promise<{txnId: string}>}
+ */
+async function reserveSong(orgId, orderId, createdBy) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('billingTransactions').doc();
+
+  const result = await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+    const sb = orgDoc.data().songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+    if (sb.availableSongs < 1) {
+      throw new HttpsError('resource-exhausted', `残曲数不足です（残り: ${sb.availableSongs}曲）`);
+    }
+
+    const newBalance = {
+      availableSongs: sb.availableSongs - 1,
+      reservedSongs: sb.reservedSongs + 1,
+      usedSongsTotal: sb.usedSongsTotal,
+      expiredSongsTotal: sb.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {songBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'reserve',
+      songsDelta: -1,
+      quantity: 1,
+      balanceAfter: {
+        availableSongs: newBalance.availableSongs,
+        reservedSongs: newBalance.reservedSongs,
+      },
+      orderId: orderId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy,
+    });
+
+    return {txnId: txnRef.id};
+  });
+
+  return result;
+}
+
+/**
+ * 曲消費確定（consume）- 予約済み1曲を使用確定にする
+ * 二重防止: orderId で既存 consume を検索
+ *
+ * @param {string} orgId - 組織ID
+ * @param {string} orderId - 注文ID
+ * @param {string} sunoTaskId - Suno タスクID
+ * @returns {Promise<{txnId: string}|null>}
+ */
+async function consumeSong(orgId, orderId, sunoTaskId) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnCol = orgRef.collection('billingTransactions');
+
+  // 二重防止
+  const existing = await txnCol
+    .where('type', '==', 'consume')
+    .where('orderId', '==', orderId)
+    .limit(1)
+    .get();
+
+  if (!existing.empty) {
+    console.log(`[consumeSong] Already consumed for order ${orderId}, skipping`);
+    return null;
+  }
+
+  const txnRef = txnCol.doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) return;
+
+    const sb = orgDoc.data().songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+    const newBalance = {
+      availableSongs: sb.availableSongs,
+      reservedSongs: Math.max(0, sb.reservedSongs - 1),
+      usedSongsTotal: sb.usedSongsTotal + 1,
+      expiredSongsTotal: sb.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {songBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'consume',
+      songsDelta: -1,
+      quantity: 1,
+      balanceAfter: {
+        availableSongs: newBalance.availableSongs,
+        reservedSongs: newBalance.reservedSongs,
+      },
+      orderId,
+      sunoTaskId: sunoTaskId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'system',
+    });
+  });
+
+  return {txnId: txnRef.id};
+}
+
+/**
+ * 曲予約取消（release）- 予約済み1曲を利用可能に戻す
+ * 二重防止: reservationTxnId or orderId で既存 release を検索
+ *
+ * @param {string} orgId - 組織ID
+ * @param {string} orderId - 注文ID
+ * @param {string} [reservationTxnId] - 予約時のトランザクションID
+ * @returns {Promise<{txnId: string}|null>}
+ */
+async function releaseSong(orgId, orderId, reservationTxnId) {
+  const orgRef = organizationsRef().doc(orgId);
+  const txnCol = orgRef.collection('billingTransactions');
+
+  // 二重防止
+  let existing;
+  if (reservationTxnId) {
+    existing = await txnCol
+      .where('type', '==', 'release')
+      .where('reservationTxnId', '==', reservationTxnId)
+      .limit(1)
+      .get();
+  } else {
+    existing = await txnCol
+      .where('type', '==', 'release')
+      .where('orderId', '==', orderId)
+      .limit(1)
+      .get();
+  }
+
+  if (existing && !existing.empty) {
+    console.log(`[releaseSong] Already released for order ${orderId}, skipping`);
+    return null;
+  }
+
+  const txnRef = txnCol.doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) return;
+
+    const sb = orgDoc.data().songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+    const newBalance = {
+      availableSongs: sb.availableSongs + 1,
+      reservedSongs: Math.max(0, sb.reservedSongs - 1),
+      usedSongsTotal: sb.usedSongsTotal,
+      expiredSongsTotal: sb.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {songBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'release',
+      songsDelta: 1,
+      quantity: 1,
+      balanceAfter: {
+        availableSongs: newBalance.availableSongs,
+        reservedSongs: newBalance.reservedSongs,
+      },
+      orderId,
+      reservationTxnId: reservationTxnId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: 'system',
+    });
+  });
+
+  return {txnId: txnRef.id};
+}
+
+// =============================================================================
 // ポイント制 - Callable Functions
 // =============================================================================
 
@@ -4482,6 +4684,395 @@ exports.grantTrialPoints = onCall({
   return {success: true, txnId: txnRef.id};
 });
 
+// =============================================================================
+// 曲数制 - Callable Functions
+// =============================================================================
+
+/**
+ * getOrgBillingSummary - orgの残曲・契約・請求設定を返す
+ *
+ * 入力: { orgId: string }
+ * 出力: { songBalance, contract, billingSettings }
+ */
+exports.getOrgBillingSummary = onCall({
+  cors: true,
+}, async (request) => {
+  requireAuth(request);
+  const {orgId} = request.data;
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgIdは必須です');
+  await requireOrgAccess(request, orgId);
+
+  const orgDoc = await organizationsRef().doc(orgId).get();
+  if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+  const orgData = orgDoc.data();
+  const sb = orgData.songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+  const contract = orgData.contract || {};
+  const billingSettings = orgData.billingSettings || {};
+
+  return {
+    songBalance: sb,
+    availableSongs: sb.availableSongs,
+    reservedSongs: sb.reservedSongs,
+    usedSongsTotal: sb.usedSongsTotal,
+    expiredSongsTotal: sb.expiredSongsTotal || 0,
+    contract: {
+      currentPlan: contract.currentPlan || null,
+      startedAt: contract.startedAt || null,
+      endsAt: contract.endsAt || null,
+      includedSongs: contract.includedSongs || 0,
+    },
+    billingSettings: {
+      basePlanPrices: billingSettings.basePlanPrices || {light: 20000, standard: 60000, premium: 100000},
+      addonSongPriceYen: billingSettings.addonSongPriceYen ?? 1000,
+      salesChannel: billingSettings.salesChannel || 'direct',
+      agencyName: billingSettings.agencyName || null,
+      agentPayoutRate: billingSettings.agentPayoutRate || {basePlans: {light: 0, standard: 0, premium: 0}, addonSong: 0},
+    },
+  };
+});
+
+/**
+ * updateOrgBillingSettings - 店舗の請求設定を更新（super_adminのみ）
+ *
+ * 入力: { orgId, billingSettings }
+ * 出力: { success }
+ */
+exports.updateOrgBillingSettings = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {orgId, billingSettings} = request.data;
+  if (!orgId || !billingSettings) throw new HttpsError('invalid-argument', 'orgIdとbillingSettingsは必須です');
+
+  const orgRef = organizationsRef().doc(orgId);
+  const orgDoc = await orgRef.get();
+  if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+  const updates = {};
+  const allowed = ['basePlanPrices', 'addonSongPriceYen', 'salesChannel', 'agencyName', 'agentPayoutRate'];
+  for (const key of allowed) {
+    if (billingSettings[key] !== undefined) {
+      updates[`billingSettings.${key}`] = billingSettings[key];
+    }
+  }
+
+  if (Object.keys(updates).length === 0) throw new HttpsError('invalid-argument', '更新するフィールドがありません');
+
+  await orgRef.update(updates);
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'update_billing_settings',
+    targetOrgId: orgId,
+    targetResource: `organizations/${orgId}`,
+    meta: {updatedFields: Object.keys(updates)},
+  });
+
+  console.log(`[updateOrgBillingSettings] Updated billing settings for org ${orgId} by ${auth.token.email}`);
+  return {success: true};
+});
+
+/**
+ * recordBasePlanPurchase - 基本プラン購入登録（super_adminのみ）
+ * 残曲をプラン曲数でリセットし、契約期間を1年に設定する。
+ *
+ * 入力: { orgId, planType, note? }
+ * 出力: { success, txnId }
+ */
+exports.recordBasePlanPurchase = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {orgId, planType, note} = request.data;
+
+  if (!orgId || !planType) throw new HttpsError('invalid-argument', 'orgIdとplanTypeは必須です');
+
+  const PLAN_SONGS = {light: 22, standard: 66, premium: 110};
+  const includedSongs = PLAN_SONGS[planType];
+  if (!includedSongs) throw new HttpsError('invalid-argument', `無効なプランタイプ: ${planType}`);
+
+  const PLAN_LABELS = {light: 'ライト', standard: 'スタンダード', premium: 'プレミアム'};
+
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('billingTransactions').doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+    const orgData = orgDoc.data();
+
+    // 予約中の曲がある場合は拒否（進行中ジョブとの競合防止）
+    const currentReserved = orgData.songBalance?.reservedSongs || 0;
+    if (currentReserved > 0) {
+      throw new HttpsError('failed-precondition', '楽曲生成中の注文があるため、基本プランを更新できません。生成完了後に再実行してください。');
+    }
+
+    const bs = orgData.billingSettings || {};
+    const priceYen = bs.basePlanPrices?.[planType] || {light: 20000, standard: 60000, premium: 100000}[planType];
+
+    // 代理店還元額の計算
+    const payoutRate = bs.agentPayoutRate?.basePlans?.[planType] || 0;
+    const agentPayoutYen = Math.round(priceYen * payoutRate / 100);
+
+    const now = new Date();
+    const endsAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+
+    const newSongBalance = {
+      availableSongs: includedSongs,
+      reservedSongs: 0,
+      usedSongsTotal: orgData.songBalance?.usedSongsTotal || 0,
+      expiredSongsTotal: orgData.songBalance?.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {
+      'contract.currentPlan': planType,
+      'contract.startedAt': admin.firestore.Timestamp.fromDate(now),
+      'contract.endsAt': admin.firestore.Timestamp.fromDate(endsAt),
+      'contract.includedSongs': includedSongs,
+      songBalance: newSongBalance,
+    });
+
+    tx.set(txnRef, {
+      type: 'base_plan_purchase',
+      songsDelta: includedSongs,
+      quantity: includedSongs,
+      amountYen: priceYen,
+      agentPayoutYen,
+      planType,
+      note: note || null,
+      balanceAfter: {
+        availableSongs: includedSongs,
+        reservedSongs: 0,
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: auth.uid,
+    });
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'record_base_plan_purchase',
+    targetOrgId: orgId,
+    targetResource: `organizations/${orgId}`,
+    meta: {planType, includedSongs, note: note || null},
+  });
+
+  console.log(`[recordBasePlanPurchase] ${PLAN_LABELS[planType]}プラン(${includedSongs}曲) registered for org ${orgId} by ${auth.token.email}`);
+  return {success: true};
+});
+
+/**
+ * recordAddonPurchase - 追加曲購入登録（super_adminのみ）
+ *
+ * 入力: { orgId, quantity, note? }
+ * 出力: { success }
+ */
+exports.recordAddonPurchase = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {orgId, quantity, note} = request.data;
+
+  if (!orgId || !quantity || quantity <= 0 || !Number.isInteger(quantity)) {
+    throw new HttpsError('invalid-argument', 'orgIdと正の整数のquantityは必須です');
+  }
+
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('billingTransactions').doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+    const orgData = orgDoc.data();
+
+    // 有効な基本契約の検証
+    const contract = orgData.contract || {};
+    if (!contract.currentPlan || !contract.endsAt) {
+      throw new HttpsError('failed-precondition', '有効な基本プラン契約がないため、追加購入できません。先に基本プランを登録してください。');
+    }
+    const endsAtDate = contract.endsAt.toDate ? contract.endsAt.toDate() : new Date(contract.endsAt);
+    if (endsAtDate <= new Date()) {
+      throw new HttpsError('failed-precondition', '基本プラン契約の期限が切れているため、追加購入できません。先に基本プランを更新してください。');
+    }
+
+    const sb = orgData.songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+    const unitPrice = orgData.billingSettings?.addonSongPriceYen ?? 1000;
+    const amountYen = unitPrice * quantity;
+
+    // 代理店還元額の計算
+    const payoutRate = orgData.billingSettings?.agentPayoutRate?.addonSong || 0;
+    const agentPayoutYen = Math.round(amountYen * payoutRate / 100);
+
+    const newBalance = {
+      availableSongs: sb.availableSongs + quantity,
+      reservedSongs: sb.reservedSongs,
+      usedSongsTotal: sb.usedSongsTotal,
+      expiredSongsTotal: sb.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {songBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'addon_purchase',
+      songsDelta: quantity,
+      quantity,
+      amountYen,
+      agentPayoutYen,
+      note: note || null,
+      balanceAfter: {
+        availableSongs: newBalance.availableSongs,
+        reservedSongs: newBalance.reservedSongs,
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: auth.uid,
+    });
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'record_addon_purchase',
+    targetOrgId: orgId,
+    targetResource: `organizations/${orgId}`,
+    meta: {quantity, note: note || null},
+  });
+
+  console.log(`[recordAddonPurchase] ${quantity}曲追加購入 registered for org ${orgId} by ${auth.token.email}`);
+  return {success: true};
+});
+
+/**
+ * grantSupportSongs - 補助曲付与（super_adminのみ）
+ *
+ * 入力: { orgId, quantity, reason }
+ * 出力: { success }
+ */
+exports.grantSupportSongs = onCall({
+  cors: true,
+}, async (request) => {
+  const {auth} = await requireSuperAdmin(request);
+  const {orgId, quantity, reason} = request.data;
+
+  if (!orgId || !quantity || quantity <= 0 || !Number.isInteger(quantity)) {
+    throw new HttpsError('invalid-argument', 'orgIdと正の整数のquantityは必須です');
+  }
+  if (!reason || reason.trim().length === 0) {
+    throw new HttpsError('invalid-argument', '理由は必須です');
+  }
+
+  const orgRef = organizationsRef().doc(orgId);
+  const txnRef = orgRef.collection('billingTransactions').doc();
+
+  await db.runTransaction(async (tx) => {
+    const orgDoc = await tx.get(orgRef);
+    if (!orgDoc.exists) throw new HttpsError('not-found', '組織が見つかりません');
+
+    const orgData = orgDoc.data();
+
+    // 有効な基本契約の検証
+    const contract = orgData.contract || {};
+    if (!contract.currentPlan || !contract.endsAt) {
+      throw new HttpsError('failed-precondition', '有効な基本プラン契約がないため、補助曲を付与できません。先に基本プランを登録してください。');
+    }
+    const endsAtDate = contract.endsAt.toDate ? contract.endsAt.toDate() : new Date(contract.endsAt);
+    if (endsAtDate <= new Date()) {
+      throw new HttpsError('failed-precondition', '基本プラン契約の期限が切れているため、補助曲を付与できません。先に基本プランを更新してください。');
+    }
+
+    const sb = orgData.songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+    const newBalance = {
+      availableSongs: sb.availableSongs + quantity,
+      reservedSongs: sb.reservedSongs,
+      usedSongsTotal: sb.usedSongsTotal,
+      expiredSongsTotal: sb.expiredSongsTotal || 0,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    tx.update(orgRef, {songBalance: newBalance});
+
+    tx.set(txnRef, {
+      type: 'support_grant',
+      songsDelta: quantity,
+      quantity,
+      amountYen: 0,
+      agentPayoutYen: 0,
+      reason: reason.trim(),
+      note: null,
+      balanceAfter: {
+        availableSongs: newBalance.availableSongs,
+        reservedSongs: newBalance.reservedSongs,
+      },
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: auth.uid,
+    });
+  });
+
+  await writeAuditLog({
+    actorUid: auth.uid,
+    actorEmail: auth.token.email,
+    action: 'grant_support_songs',
+    targetOrgId: orgId,
+    targetResource: `organizations/${orgId}`,
+    meta: {quantity, reason: reason.trim()},
+  });
+
+  console.log(`[grantSupportSongs] ${quantity}曲補助付与 to org ${orgId} by ${auth.token.email}`);
+  return {success: true};
+});
+
+/**
+ * listOrgBillingTransactions - 請求取引履歴一覧（ページング対応）
+ *
+ * 入力: { orgId, type?, pageSize?, cursor? }
+ * 出力: { transactions, nextCursor }
+ */
+exports.listOrgBillingTransactions = onCall({
+  cors: true,
+}, async (request) => {
+  requireAuth(request);
+  const {orgId, type, pageSize, cursor} = request.data;
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgIdは必須です');
+  await requireOrgAccess(request, orgId);
+
+  const limit = Math.min(pageSize || 20, 100);
+  const txnCol = organizationsRef().doc(orgId).collection('billingTransactions');
+
+  let q = txnCol.orderBy('createdAt', 'desc');
+  if (type) q = q.where('type', '==', type);
+  if (cursor) {
+    const cursorDoc = await txnCol.doc(cursor).get();
+    if (cursorDoc.exists) q = q.startAfter(cursorDoc);
+  }
+
+  q = q.limit(limit + 1);
+  const snapshot = await q.get();
+  const docs = snapshot.docs;
+
+  const hasMore = docs.length > limit;
+  const transactions = docs.slice(0, limit).map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+    createdAt: doc.data().createdAt?.toDate?.()?.toISOString() || null,
+  }));
+
+  return {
+    transactions,
+    nextCursor: hasMore ? docs[limit - 1].id : null,
+  };
+});
+
+// =============================================================================
+// B2B楽曲生成
+// =============================================================================
+
 /**
  * startNursingHomeSongGeneration - B2B楽曲生成開始（ポイント制対応）
  *
@@ -4557,47 +5148,38 @@ exports.startNursingHomeSongGeneration = onCall({
 
   // ロック取得成功 — 以降の失敗時は必ずロック解除する
   let reservation = null;
-  let songCost = 500;
   try {
-    // 契約有効期限チェック
+    // 契約有効性チェック
     const orgDoc = await organizationsRef().doc(order.orgId).get();
     const orgData = orgDoc.data();
 
-    if (orgData.contractEndDate) {
-      const endDate = orgData.contractEndDate.toDate ? orgData.contractEndDate.toDate() : new Date(orgData.contractEndDate);
-      if (endDate < new Date()) {
-        throw new HttpsError('failed-precondition', '契約期限が切れています。契約を更新してください。');
-      }
+    const contract = orgData.contract || {};
+    if (!contract.currentPlan || !contract.endsAt) {
+      throw new HttpsError('failed-precondition', '有効な基本プラン契約がありません。先に基本プランを登録してください。');
+    }
+    const contractEndDate = contract.endsAt.toDate ? contract.endsAt.toDate() : new Date(contract.endsAt);
+    if (contractEndDate <= new Date()) {
+      throw new HttpsError('failed-precondition', '契約期限が切れています。契約を更新してください。');
     }
 
-    // サービスコスト取得
-    try {
-      songCost = await getServiceCost('song_generation');
-    } catch (e) {
-      // マスタ未投入時はデフォルト500
-    }
-
-    // ポイント予約
-    reservation = await reservePoints(order.orgId, songCost, orderId, auth.uid);
+    // 曲予約（1曲分）
+    reservation = await reserveSong(order.orgId, orderId, auth.uid);
 
     // 予約情報をorderに保存（release時に使う）
     await orderRef.update({
-      pointReservation: {
+      songReservation: {
         txnId: reservation.txnId,
-        amount: songCost,
-        amountFree: reservation.amountFree,
-        amountPaid: reservation.amountPaid,
       },
     });
   } catch (e) {
     // ロック解除（reserveが成功していればrelease）
     if (reservation) {
-      await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+      await releaseSong(order.orgId, orderId, reservation.txnId);
     }
     await orderRef.update({
       generationLock: false,
       generationLockAt: admin.firestore.FieldValue.delete(),
-      pointReservation: admin.firestore.FieldValue.delete(),
+      songReservation: admin.firestore.FieldValue.delete(),
     });
     throw e;
   }
@@ -4606,11 +5188,11 @@ exports.startNursingHomeSongGeneration = onCall({
   const sunoApiKey = process.env.SUNO_API_KEY;
   if (!sunoApiKey) {
     // APIキー未設定時はreserveをrelease + ロック解除
-    await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+    await releaseSong(order.orgId, orderId, reservation.txnId);
     await orderRef.update({
       generationLock: false,
       generationLockAt: admin.firestore.FieldValue.delete(),
-      pointReservation: admin.firestore.FieldValue.delete(),
+      songReservation: admin.firestore.FieldValue.delete(),
     });
     throw new HttpsError('internal', 'SUNO_API_KEYが設定されていません');
   }
@@ -4650,11 +5232,11 @@ exports.startNursingHomeSongGeneration = onCall({
     taskId = response.data.data.taskId;
   } catch (e) {
     // Suno呼び出し失敗時はreserveをrelease + ロック解除
-    await releasePoints(order.orgId, songCost, orderId, reservation.amountFree, reservation.amountPaid, reservation.txnId);
+    await releaseSong(order.orgId, orderId, reservation.txnId);
     await orderRef.update({
       generationLock: false,
       generationLockAt: admin.firestore.FieldValue.delete(),
-      pointReservation: admin.firestore.FieldValue.delete(),
+      songReservation: admin.firestore.FieldValue.delete(),
     });
     console.error(`[startNursingHomeSongGeneration] Suno API failed for order ${orderId}:`, e.message);
     throw new HttpsError('internal', `楽曲生成APIの呼び出しに失敗しました: ${e.message}`);
@@ -4673,7 +5255,7 @@ exports.startNursingHomeSongGeneration = onCall({
     generationLockAt: admin.firestore.FieldValue.delete(),
   });
 
-  console.log(`[startNursingHomeSongGeneration] Started for order ${orderId}, taskId: ${taskId}, cost: ${songCost}pt`);
+  console.log(`[startNursingHomeSongGeneration] Started for order ${orderId}, taskId: ${taskId}, cost: 1曲`);
   return {success: true, taskId};
 });
 
@@ -4778,4 +5360,80 @@ exports.expirePoints = onSchedule({
   }
 
   console.log(`[expirePoints] Completed. ${expiredCount} organizations processed`);
+});
+
+// =============================================================================
+// 曲数制 - 失効バッチ
+// =============================================================================
+
+/**
+ * expireSongs - 契約期限切れの曲数失効（日次バッチ）
+ * JST 01:05 に実行（expirePointsの5分後）
+ */
+exports.expireSongs = onSchedule({
+  schedule: "5 1 * * *",
+  timeZone: "Asia/Tokyo",
+}, async (event) => {
+  console.log('[expireSongs] Starting daily song expiration check');
+
+  const now = new Date();
+
+  // contract.endsAt <= now のorgを検索
+  const orgsSnapshot = await organizationsRef()
+    .where('contract.endsAt', '<=', admin.firestore.Timestamp.fromDate(now))
+    .get();
+
+  if (orgsSnapshot.empty) {
+    console.log('[expireSongs] No expired organizations found');
+    return;
+  }
+
+  let expiredCount = 0;
+
+  for (const orgDoc of orgsSnapshot.docs) {
+    const orgData = orgDoc.data();
+    const sb = orgData.songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+    if (sb.availableSongs <= 0) continue;
+
+    const orgId = orgDoc.id;
+    const txnCol = orgDoc.ref.collection('billingTransactions');
+
+    await db.runTransaction(async (tx) => {
+      const freshOrg = await tx.get(orgDoc.ref);
+      const freshSb = freshOrg.data().songBalance || {availableSongs: 0, reservedSongs: 0, usedSongsTotal: 0, expiredSongsTotal: 0};
+
+      if (freshSb.availableSongs <= 0) return;
+
+      const expireCount = freshSb.availableSongs;
+
+      const txnRef = txnCol.doc();
+      tx.set(txnRef, {
+        type: 'expire',
+        songsDelta: -expireCount,
+        quantity: expireCount,
+        amountYen: 0,
+        agentPayoutYen: 0,
+        reason: '契約期限切れによる残曲失効',
+        balanceAfter: {availableSongs: 0, reservedSongs: freshSb.reservedSongs},
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdBy: 'system',
+      });
+
+      tx.update(orgDoc.ref, {
+        songBalance: {
+          availableSongs: 0,
+          reservedSongs: freshSb.reservedSongs,
+          usedSongsTotal: freshSb.usedSongsTotal,
+          expiredSongsTotal: (freshSb.expiredSongsTotal || 0) + expireCount,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+      });
+    });
+
+    console.log(`[expireSongs] Expired ${sb.availableSongs} songs for org ${orgId}`);
+    expiredCount++;
+  }
+
+  console.log(`[expireSongs] Completed. ${expiredCount} organizations processed`);
 });

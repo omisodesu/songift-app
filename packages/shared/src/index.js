@@ -73,6 +73,40 @@ export function getEnvironmentFromProjectId(projectId) {
 }
 
 // =============================================================================
+// B2B Song Billing Constants
+// =============================================================================
+
+/**
+ * B2B基本プラン定義（曲数制）
+ * @constant
+ */
+export const SONG_PLANS = {
+  light:    { label: 'ライト',      songs: 22,  defaultPriceYen: 20000 },
+  standard: { label: 'スタンダード', songs: 66,  defaultPriceYen: 60000 },
+  premium:  { label: 'プレミアム',   songs: 110, defaultPriceYen: 100000 },
+};
+
+/**
+ * 追加1曲のデフォルト価格（円）
+ * @constant
+ */
+export const DEFAULT_ADDON_SONG_PRICE_YEN = 1000;
+
+/**
+ * 請求取引の種別
+ * @constant
+ */
+export const BILLING_TXN_TYPES = {
+  BASE_PLAN_PURCHASE: 'base_plan_purchase',
+  ADDON_PURCHASE: 'addon_purchase',
+  SUPPORT_GRANT: 'support_grant',
+  RESERVE: 'reserve',
+  CONSUME: 'consume',
+  RELEASE: 'release',
+  EXPIRE: 'expire',
+};
+
+// =============================================================================
 // Type Definitions (JSDoc)
 // =============================================================================
 

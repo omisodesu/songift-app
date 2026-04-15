@@ -4,12 +4,19 @@ import { functions } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
 
 const TYPE_LABELS = {
-  grant: { label: '付与', color: 'text-green-600', sign: '+' },
-  purchase: { label: '購入', color: 'text-green-600', sign: '+' },
-  reserve: { label: '予約', color: 'text-orange-600', sign: '-' },
-  consume: { label: '消費', color: 'text-red-600', sign: '-' },
-  release: { label: '返還', color: 'text-blue-600', sign: '+' },
-  expire: { label: '失効', color: 'text-gray-500', sign: '-' },
+  base_plan_purchase: { label: 'プラン購入', color: 'text-green-600', sign: '+' },
+  addon_purchase:     { label: '追加購入',   color: 'text-green-600', sign: '+' },
+  support_grant:      { label: '補助付与',   color: 'text-green-600', sign: '+' },
+  reserve:            { label: '予約',       color: 'text-orange-600', sign: '-' },
+  consume:            { label: '消費',       color: 'text-red-600',   sign: '-' },
+  release:            { label: '返還',       color: 'text-blue-600',  sign: '+' },
+  expire:             { label: '失効',       color: 'text-gray-500',  sign: '-' },
+};
+
+const PLAN_LABELS = {
+  light: 'ライト',
+  standard: 'スタンダード',
+  premium: 'プレミアム',
 };
 
 const PointHistoryPage = ({ orgId }) => {
@@ -33,7 +40,7 @@ const PointHistoryPage = ({ orgId }) => {
         setLoading(true);
       }
 
-      const listFn = httpsCallable(functions, 'listPointTransactions');
+      const listFn = httpsCallable(functions, 'listOrgBillingTransactions');
       const params = { orgId: effectiveOrgId, pageSize: 20 };
       if (filterType) params.type = filterType;
       if (cursor) params.cursor = cursor;
@@ -57,7 +64,7 @@ const PointHistoryPage = ({ orgId }) => {
   const fetchSummary = useCallback(async () => {
     if (!effectiveOrgId) return;
     try {
-      const getSummary = httpsCallable(functions, 'getPointSummary');
+      const getSummary = httpsCallable(functions, 'getOrgBillingSummary');
       const result = await getSummary({ orgId: effectiveOrgId });
       setSummary(result.data);
     } catch (e) {
@@ -78,30 +85,49 @@ const PointHistoryPage = ({ orgId }) => {
     );
   }
 
+  // 契約期間表示
+  const formatDate = (dateVal) => {
+    if (!dateVal) return '-';
+    const d = dateVal.toDate
+      ? dateVal.toDate()
+      : new Date(dateVal._seconds ? dateVal._seconds * 1000 : dateVal);
+    return d.toLocaleDateString('ja-JP');
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-2xl font-bold mb-6">ポイント利用履歴</h1>
+        <h1 className="text-2xl font-bold mb-6">残曲・請求履歴</h1>
 
         {/* 残高サマリー */}
         {summary && (
-          <div className="bg-white rounded-lg shadow p-6 mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <p className="text-sm text-gray-500">利用可能</p>
-              <p className="text-2xl font-bold text-blue-600">{summary.available.toLocaleString()}pt</p>
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              <div>
+                <p className="text-sm text-gray-500">利用可能</p>
+                <p className="text-2xl font-bold text-blue-600">{summary.availableSongs}曲</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">生成中</p>
+                <p className="text-lg font-bold text-orange-600">{summary.reservedSongs}曲</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">累計消費</p>
+                <p className="text-lg font-bold text-gray-600">{summary.usedSongsTotal}曲</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">累計失効</p>
+                <p className="text-lg font-bold text-gray-400">{summary.expiredSongsTotal || 0}曲</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm text-gray-500">残り生成可能</p>
-              <p className="text-2xl font-bold text-green-600">{summary.remainingSongs}曲</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">予約中</p>
-              <p className="text-lg font-bold text-orange-600">{(summary.pointBalance?.reserved || 0).toLocaleString()}pt</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">累計使用</p>
-              <p className="text-lg font-bold text-gray-600">{(summary.pointBalance?.usedTotal || 0).toLocaleString()}pt</p>
-            </div>
+            {summary.contract?.currentPlan && (
+              <div className="border-t pt-3 flex gap-6 text-sm text-gray-600">
+                <span>契約プラン: <span className="font-bold">{PLAN_LABELS[summary.contract.currentPlan] || summary.contract.currentPlan}</span></span>
+                <span>開始: {formatDate(summary.contract.startedAt)}</span>
+                <span>終了: {formatDate(summary.contract.endsAt)}</span>
+                <span>プラン曲数: {summary.contract.includedSongs}曲</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -136,9 +162,8 @@ const PointHistoryPage = ({ orgId }) => {
                 <tr>
                   <th className="text-left px-4 py-3 text-gray-600">日時</th>
                   <th className="text-left px-4 py-3 text-gray-600">種別</th>
-                  <th className="text-right px-4 py-3 text-gray-600">ポイント</th>
-                  <th className="text-right px-4 py-3 text-gray-600 hidden md:table-cell">Free</th>
-                  <th className="text-right px-4 py-3 text-gray-600 hidden md:table-cell">Paid</th>
+                  <th className="text-right px-4 py-3 text-gray-600">曲数</th>
+                  <th className="text-right px-4 py-3 text-gray-600 hidden md:table-cell">金額(税別)</th>
                   <th className="text-left px-4 py-3 text-gray-600 hidden md:table-cell">備考</th>
                 </tr>
               </thead>
@@ -148,6 +173,9 @@ const PointHistoryPage = ({ orgId }) => {
                   const dateStr = txn.createdAt
                     ? new Date(txn.createdAt).toLocaleString('ja-JP')
                     : '-';
+                  const description = txn.note || txn.reason || txn.description ||
+                    (txn.planType ? `${PLAN_LABELS[txn.planType] || txn.planType}プラン` : '') ||
+                    txn.orderId || '-';
                   return (
                     <tr key={txn.id} className="border-t hover:bg-gray-50">
                       <td className="px-4 py-3 text-gray-500 text-xs">{dateStr}</td>
@@ -155,16 +183,13 @@ const PointHistoryPage = ({ orgId }) => {
                         <span className={`font-bold ${typeInfo.color}`}>{typeInfo.label}</span>
                       </td>
                       <td className={`px-4 py-3 text-right font-bold ${typeInfo.color}`}>
-                        {typeInfo.sign}{txn.amount?.toLocaleString()}
+                        {typeInfo.sign}{txn.quantity || 0}
                       </td>
                       <td className="px-4 py-3 text-right text-xs text-gray-500 hidden md:table-cell">
-                        {txn.amountFree || 0}
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-gray-500 hidden md:table-cell">
-                        {txn.amountPaid || 0}
+                        {txn.amountYen != null ? `${txn.amountYen.toLocaleString()}円` : '-'}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500 hidden md:table-cell truncate max-w-[200px]">
-                        {txn.description || txn.orderId || '-'}
+                        {description}
                       </td>
                     </tr>
                   );

@@ -251,10 +251,10 @@ const AdminPage = ({ user, orgId = null }) => {
     }
   };
 
-  // 2. Suno楽曲生成（サーバーサイド経由・ポイント制対応）
+  // 2. Suno楽曲生成（サーバーサイド経由・曲数制対応）
   const handleGenerateSong = async (order) => {
     if (!order.generatedLyrics || !order.generatedPrompt) return alert("先に歌詞とプロンプトを生成してください");
-    if (!confirm("楽曲生成を開始しますか？（ポイントを消費します）")) return;
+    if (!confirm("楽曲生成を開始しますか？（1曲分を消費します）")) return;
 
     try {
       const startGeneration = httpsCallable(functions, 'startNursingHomeSongGeneration');
