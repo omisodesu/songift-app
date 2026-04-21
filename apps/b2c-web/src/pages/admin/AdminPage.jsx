@@ -9,6 +9,7 @@ import { FEEDBACK_CHANNELS, DISSATISFACTION_REASONS, BARRIER_REASONS, REORDER_IN
 import { getBackgroundTemplate } from '../../lib/backgroundTemplates';
 import { buildSimpleModePrompt } from '../../lib/prompts/simpleMode';
 import { buildProModePrompt } from '../../lib/prompts/proMode';
+import { buildNiconico2026Prompt } from '../../lib/prompts/niconico2026';
 
 // 6. 管理者ダッシュボード
 const AdminPage = ({ user }) => {
@@ -215,9 +216,11 @@ const AdminPage = ({ user }) => {
     if (!confirm(`${order.targetName}様のプロンプトを生成しますか？`)) return;
 
     // プロンプトファイルから生成
-    const systemPrompt = order.plan === 'pro'
-      ? buildProModePrompt(order)
-      : buildSimpleModePrompt(order);
+    const systemPrompt = order.plan === 'niconico2026'
+      ? buildNiconico2026Prompt(order)
+      : order.plan === 'pro'
+        ? buildProModePrompt(order)
+        : buildSimpleModePrompt(order);
 
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -627,6 +630,20 @@ const AdminPage = ({ user }) => {
     return true;
   });
 
+  const getPlanBadgeClass = (planName) => {
+    if (planName === 'nursingHome') return 'bg-green-100 text-green-800';
+    if (planName === 'niconico2026') return 'bg-cyan-100 text-cyan-800';
+    if (planName === 'pro') return 'bg-indigo-100 text-indigo-800';
+    return 'bg-pink-100 text-pink-800';
+  };
+
+  const getPlanLabel = (planName) => {
+    if (planName === 'nursingHome') return '介護施設';
+    if (planName === 'niconico2026') return 'ニコ超2026 8bit';
+    if (planName === 'simple') return '魔法診断';
+    return 'プロ';
+  };
+
   if (loading) return <div className="p-10 text-center">データを読み込んでいます...</div>;
 
   return (
@@ -916,12 +933,8 @@ const AdminPage = ({ user }) => {
               <div className="flex justify-between items-start border-b pb-4 mb-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                      order.plan === 'nursingHome' ? 'bg-green-100 text-green-800' :
-                      order.plan === 'pro' ? 'bg-indigo-100 text-indigo-800' :
-                      'bg-pink-100 text-pink-800'
-                    }`}>
-                      {order.plan === 'nursingHome' ? '介護施設' : order.plan === 'simple' ? '魔法診断' : 'プロ'}
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${getPlanBadgeClass(order.plan)}`}>
+                      {getPlanLabel(order.plan)}
                     </span>
                     <span className="text-sm text-gray-500">{order.createdAt}</span>
                     <span className={`px-2 py-1 rounded text-xs font-bold ${order.status === 'completed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -938,6 +951,15 @@ const AdminPage = ({ user }) => {
                       <p>💖 気持ち: {Array.isArray(order.targetFeeling) ? order.targetFeeling.join(", ") : order.targetFeeling}</p>
                       <p>💌 言葉: {order.magicWord}</p>
                       <p>✨ 魔法: {order.magicSpell}</p>
+                    </div>
+                  ) : order.plan === 'niconico2026' ? (
+                    <div className="mt-2 text-gray-700">
+                      <h3 className="text-xl font-bold mb-1">{order.targetName} 様</h3>
+                      <p className="text-xs text-gray-500 mb-2 font-mono">{order.id}</p>
+                      <p>🎮 ジャンル: {order.ncGenre}</p>
+                      <p>🎂 対象: {order.ncRecipientType}</p>
+                      <p>💖 好きなところ: {order.ncFavoritePoint}</p>
+                      <p>🚀 願い: {order.ncWish}</p>
                     </div>
                   ) : (
                     <div className="mt-2 text-gray-700">

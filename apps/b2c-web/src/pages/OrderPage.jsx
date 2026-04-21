@@ -7,6 +7,10 @@ import {
   FEELINGS,
   MAGIC_WORDS,
   MAGIC_SPELLS,
+  NC_GENRES,
+  NC_RECIPIENT_TYPES,
+  NC_FAVORITE_POINTS,
+  NC_WISHES,
   PRO_GENRES,
   PRO_INSTRUMENTS,
   PRO_GENDERS,
@@ -38,6 +42,11 @@ const OrderPage = ({ user = null }) => {
     targetFeeling: '',
     magicWord: '',
     magicSpell: '',
+    // ニコ超2026 8bitモード用
+    ncGenre: '',
+    ncRecipientType: '',
+    ncFavoritePoint: '',
+    ncWish: '',
     // プロモード用
     proGenre: '',
     proInstruments: [],
@@ -158,9 +167,10 @@ const OrderPage = ({ user = null }) => {
       <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow">
         <h2 className="text-2xl font-bold text-center mb-6">楽曲作成オーダー</h2>
 
-        <div className="flex justify-center mb-8">
-          <button onClick={() => setPlan('simple')} className={`px-6 py-2 rounded-l-lg font-bold ${plan === 'simple' ? 'bg-pink-500 text-white' : 'bg-gray-200 text-gray-600'}`}>簡単モード（魔法診断）</button>
-          <button onClick={() => setPlan('pro')} className={`px-6 py-2 rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード</button>
+        <div className="flex flex-col sm:flex-row justify-center mb-8">
+          <button type="button" onClick={() => setPlan('simple')} className={`px-4 py-2 sm:rounded-l-lg font-bold ${plan === 'simple' ? 'bg-pink-500 text-white' : 'bg-gray-200 text-gray-600'}`}>簡単モード（魔法診断）</button>
+          <button type="button" onClick={() => setPlan('niconico2026')} className={`px-4 py-2 font-bold ${plan === 'niconico2026' ? 'bg-cyan-500 text-white' : 'bg-gray-200 text-gray-600'}`}>ニコ超2026 8bit</button>
+          <button type="button" onClick={() => setPlan('pro')} className={`px-4 py-2 sm:rounded-r-lg font-bold ${plan === 'pro' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-600'}`}>プロモード</button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-8">
@@ -249,6 +259,71 @@ const OrderPage = ({ user = null }) => {
                     <label key={s} className="flex items-center space-x-2 cursor-pointer">
                       <input type="radio" name="magicSpell" value={s} onChange={handleChange} required className="form-radio text-pink-500" />
                       <span>{s}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ========== ニコ超2026 8bitモード ========== */}
+          {plan === 'niconico2026' && (
+            <>
+              {/* Q1. 呼び名 */}
+              <div className="bg-cyan-50 p-5 rounded-lg border border-cyan-100">
+                <label className="block font-bold text-gray-800 mb-2">🎸 Q1. お誕生日の方の呼び名 <span className="text-red-500">*</span></label>
+                <p className="text-sm text-gray-500 mb-2">ひらがな、カタカナ、アルファベットOKです（漢字入力不可）</p>
+                <input required type="text" name="targetName" onChange={handleChange} className={`w-full border p-3 rounded bg-white ${nameError ? 'border-red-500' : ''}`} placeholder="例：ゆうちゃん、Hanako" />
+                {nameError && <p className="text-xs text-red-500 mt-1 font-bold">{nameError}</p>}
+              </div>
+
+              {/* Q2. 曲調・ジャンル */}
+              <div className="bg-cyan-50 p-5 rounded-lg border border-cyan-100">
+                <label className="block font-bold text-gray-800 mb-2">🎮 Q2. 曲調・ジャンル <span className="text-red-500">*</span></label>
+                <div className="space-y-2">
+                  {NC_GENRES.map((g) => (
+                    <label key={g.value} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="ncGenre" value={g.value} onChange={handleChange} required className="form-radio text-cyan-500" />
+                      <span>{g.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q3. 誰の誕生日ソング */}
+              <div className="bg-cyan-50 p-5 rounded-lg border border-cyan-100">
+                <label className="block font-bold text-gray-800 mb-2">🎂 Q3. 誰の誕生日ソングを作りますか？ <span className="text-red-500">*</span></label>
+                <div className="space-y-2">
+                  {NC_RECIPIENT_TYPES.map((type) => (
+                    <label key={type} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="ncRecipientType" value={type} onChange={handleChange} required className="form-radio text-cyan-500" />
+                      <span>{type}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q4. 好きなところ */}
+              <div className="bg-cyan-50 p-5 rounded-lg border border-cyan-100">
+                <label className="block font-bold text-gray-800 mb-2">💖 Q4. 推しの好きなところは？ <span className="text-red-500">*</span></label>
+                <div className="space-y-2">
+                  {NC_FAVORITE_POINTS.map((point) => (
+                    <label key={point} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="ncFavoritePoint" value={point} onChange={handleChange} required className="form-radio text-cyan-500" />
+                      <span>{point}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Q5. これからどうなってほしい */}
+              <div className="bg-cyan-50 p-5 rounded-lg border border-cyan-100">
+                <label className="block font-bold text-gray-800 mb-2">🚀 Q5. これからどうなってほしい？ <span className="text-red-500">*</span></label>
+                <div className="space-y-2">
+                  {NC_WISHES.map((wish) => (
+                    <label key={wish} className="flex items-center space-x-2 cursor-pointer">
+                      <input type="radio" name="ncWish" value={wish} onChange={handleChange} required className="form-radio text-cyan-500" />
+                      <span>{wish}</span>
                     </label>
                   ))}
                 </div>
@@ -368,7 +443,11 @@ const OrderPage = ({ user = null }) => {
             </div>
           </div>
 
-          <button type="submit" disabled={loading} className={`w-full py-4 rounded-lg font-bold text-white text-xl shadow hover:opacity-90 transition ${plan === 'simple' ? 'bg-pink-500' : 'bg-indigo-600'}`}>
+          <button type="submit" disabled={loading} className={`w-full py-4 rounded-lg font-bold text-white text-xl shadow hover:opacity-90 transition ${
+            plan === 'simple' ? 'bg-pink-500' :
+            plan === 'niconico2026' ? 'bg-cyan-600' :
+            'bg-indigo-600'
+          }`}>
             {loading ? '送信中...' : 'この内容で申し込む'}
           </button>
         </form>

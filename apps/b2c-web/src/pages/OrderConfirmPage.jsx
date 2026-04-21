@@ -305,7 +305,13 @@ const OrderConfirmPage = () => {
           <dl className="space-y-2">
             <div className="flex justify-between">
               <dt className="text-gray-600">プラン</dt>
-              <dd className="font-bold">{order.plan === 'simple' ? '魔法診断モード' : 'プロモード'}</dd>
+              <dd className="font-bold">
+                {order.plan === 'simple'
+                  ? '魔法診断モード'
+                  : order.plan === 'niconico2026'
+                    ? 'ニコ超2026 8bitモード'
+                    : 'プロモード'}
+              </dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-gray-600">お名前</dt>
