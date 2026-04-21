@@ -33,6 +33,13 @@ const AdminPage = ({ user }) => {
   // 管理者向け署名URL管理
   const [adminSignedUrls, setAdminSignedUrls] = useState({});
 
+  // 注文ごとのスタイル表示トグル（order.id -> boolean）
+  const [visiblePromptStyles, setVisiblePromptStyles] = useState({});
+
+  const togglePromptStyle = (orderId) => {
+    setVisiblePromptStyles((prev) => ({ ...prev, [orderId]: !prev[orderId] }));
+  };
+
   // APIの設定 (修正: sunoapi.orgのBase URL)
   const SUNO_BASE_URL = "https://api.sunoapi.org/api/v1";
   const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
@@ -328,42 +335,16 @@ const AdminPage = ({ user }) => {
     }
   };
 
-  const handleSelectSong = async (order, songUrl) => {
-    if (!confirm("この曲を採用して納品候補にしますか？")) return;
+  const handleSelectSong = async (order, song, idx) => {
+    if (!confirm(`曲 ${idx + 1} を管理者選択として採用します。よろしいですか？`)) return;
     await updateDoc(doc(db, "orders", order.id), {
-      selectedSongUrl: songUrl,
-      status: "song_selected"
+      selectedSongIndex: idx,
+      selectedSongUrl: song.audio_url,
+      previewAudioPath: song.previewAudioPath || null,
+      status: "song_selected",
+      selectedBy: "admin",
+      selectedAt: serverTimestamp(),
     });
-  };
-
-  // プレビュー案内メール再送（固定テンプレート使用）
-  const handleResendPreviewEmail = async (order) => {
-    if (!confirm("プレビュー案内メールを再送します。よろしいですか？")) return;
-
-    try {
-      await updateDoc(doc(db, "orders", order.id), {previewEmailStatus: "sending"});
-
-      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
-      const response = await fetch(`${functionsUrl}/sendPreviewEmail`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          orderId: order.id,
-        }),
-      });
-
-      if (!response.ok) throw new Error('メール送信に失敗しました');
-
-      alert(`✅ プレビュー案内メールを再送しました！\n\n送信先: ${order.userEmail}`);
-      window.location.reload();
-    } catch (error) {
-      console.error("Preview email send error:", error);
-      await updateDoc(doc(db, "orders", order.id), {
-        previewEmailStatus: "error",
-        previewEmailError: error.message
-      });
-      alert("メール送信エラー: " + error.message);
-    }
   };
 
   // MP4納品メール送信（processPaymentで自動送信されるため、ここでは使わない）
@@ -1025,12 +1006,23 @@ const AdminPage = ({ user }) => {
                         className="w-full h-40 border mb-2 p-2 text-sm bg-gray-100"
                         value={order.generatedLyrics}
                       />
-                      <p className="font-bold mb-1">スタイル:</p>
-                      <textarea
-                        readOnly
-                        className="w-full h-24 border mb-2 p-2 text-sm bg-gray-100"
-                        value={order.generatedPrompt}
-                      />
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="font-bold">スタイル:</p>
+                        <button
+                          type="button"
+                          onClick={() => togglePromptStyle(order.id)}
+                          className="text-xs text-blue-600 underline hover:text-blue-800"
+                        >
+                          {visiblePromptStyles[order.id] ? 'スタイルを隠す' : 'スタイルを表示'}
+                        </button>
+                      </div>
+                      {visiblePromptStyles[order.id] && (
+                        <textarea
+                          readOnly
+                          className="w-full h-24 border mb-2 p-2 text-sm bg-gray-100"
+                          value={order.generatedPrompt || ''}
+                        />
+                      )}
                       <p className="text-green-600 text-xs">✅ 自動生成済み</p>
                     </div>
                   ) : (
@@ -1062,8 +1054,14 @@ const AdminPage = ({ user }) => {
                       </p>
                       <p className="text-xs text-gray-600">自動リトライ待ち、または管理者対応が必要です</p>
                     </div>
-                  ) : order.status === 'previews_ready' || order.status === 'song_selected' ? (
-                    <div className="text-green-600 text-sm mb-2">✅ 楽曲生成完了・顧客選択待ち</div>
+                  ) : order.status === 'previews_ready' ? (
+                    <div className="text-green-600 text-sm mb-2">✅ 楽曲生成完了・管理者選択待ち</div>
+                  ) : order.status === 'song_selected' ? (
+                    <div className="text-green-600 text-sm mb-2">
+                      {order.selectedBy === 'admin'
+                        ? '✅ 楽曲選択済み（管理者選択）'
+                        : '✅ 楽曲選択済み'}
+                    </div>
                   ) : (
                     <div className="text-center py-4 text-gray-500 text-sm">
                       {order.currentStep === 'song' ? (
@@ -1074,21 +1072,40 @@ const AdminPage = ({ user }) => {
                     </div>
                   )}
 
-                  {/* 生成済み楽曲リスト（閲覧のみ） */}
+                  {/* 生成済み楽曲リスト（管理者が選択） */}
                   {order.generatedSongs && order.generatedSongs.length > 0 && (
                     <div className="space-y-3 mt-2">
-                      {order.generatedSongs.map((song, idx) => (
-                        <div key={idx} className={`p-2 border rounded ${order.selectedSongIndex === idx ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
-                          <p className="text-xs font-bold mb-1">
-                            曲 {idx + 1}
-                            {order.selectedSongIndex === idx && <span className="ml-2 text-green-700">（顧客選択）</span>}
-                          </p>
-                          <audio controls src={song.audio_url} className="w-full h-8 mb-2" />
-                          {song.previewReady && (
-                            <p className="text-xs text-green-600">プレビュー生成済み</p>
-                          )}
-                        </div>
-                      ))}
+                      {order.generatedSongs.map((song, idx) => {
+                        const isSelected = order.selectedSongIndex === idx;
+                        const selectedLabel = order.selectedBy === 'admin'
+                          ? '（管理者選択）'
+                          : order.selectedBy
+                            ? '（選択済み）'
+                            : '（選択中）';
+                        return (
+                          <div key={idx} className={`p-2 border rounded ${isSelected ? 'bg-green-100 border-green-500' : 'bg-white'}`}>
+                            <p className="text-xs font-bold mb-1">
+                              曲 {idx + 1}
+                              {isSelected && <span className="ml-2 text-green-700">{selectedLabel}</span>}
+                            </p>
+                            <audio controls src={song.audio_url} className="w-full h-8 mb-2" />
+                            {song.previewReady && (
+                              <p className="text-xs text-green-600">プレビュー生成済み</p>
+                            )}
+                            <button
+                              onClick={() => handleSelectSong(order, song, idx)}
+                              disabled={isSelected}
+                              className={`w-full mt-2 text-xs font-bold py-1.5 px-2 rounded ${
+                                isSelected
+                                  ? 'bg-green-600 text-white cursor-default'
+                                  : 'bg-blue-500 text-white hover:bg-blue-600'
+                              }`}
+                            >
+                              {isSelected ? '管理者選択中' : '管理者がこの曲を選ぶ'}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1187,33 +1204,21 @@ const AdminPage = ({ user }) => {
                 <div className="bg-gray-50 p-4 rounded border">
                   <h4 className="font-semibold mb-3">4. メール管理</h4>
 
-                  {/* プレビュー案内メール */}
-                  <div className="mb-4 p-3 bg-blue-50 rounded">
-                    <p className="font-medium mb-2 text-sm">📧 プレビュー案内メール</p>
-                    {order.previewEmailStatus === 'sent' ? (
-                      <div>
-                        <p className="text-xs text-green-600 mb-2">
-                          ✅ 送信済み
-                          {order.previewEmailSentAt && (
-                            <span className="text-gray-500 ml-1">
-                              ({order.previewEmailSentAt.toDate ? order.previewEmailSentAt.toDate().toLocaleString('ja-JP') : new Date(order.previewEmailSentAt).toLocaleString('ja-JP')})
-                            </span>
-                          )}
-                        </p>
-                        <button
-                          onClick={() => handleResendPreviewEmail(order)}
-                          className="text-sm bg-blue-500 text-white px-3 py-2 rounded w-full"
-                        >
-                          再送する 📨
-                        </button>
-                      </div>
-                    ) : order.previewAudioPath ? (
-                      <p className="text-xs text-yellow-600">
-                        ⏳ 動画生成完了時に自動送信されます
-                      </p>
-                    ) : (
-                      <p className="text-xs text-gray-500">
-                        ※ 動画生成後に自動送信されます
+                  {/* プレビュー案内メール（現在は一時停止中） */}
+                  <div className="mb-4 p-3 bg-gray-100 rounded border border-gray-300">
+                    <p className="font-medium mb-2 text-sm text-gray-700">📧 プレビュー案内メール（一時停止中）</p>
+                    <p className="text-xs text-gray-600 mb-1">
+                      現在、プレビュー案内メールの送信は一時停止しています。
+                    </p>
+                    <p className="text-xs text-gray-600">
+                      管理者が管理画面から楽曲を選び、支払い・完成メール送信は管理画面から手動で行う運用です。
+                    </p>
+                    {order.previewEmailStatus === 'sent' && order.previewEmailSentAt && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        過去の送信履歴:{' '}
+                        {order.previewEmailSentAt.toDate
+                          ? order.previewEmailSentAt.toDate().toLocaleString('ja-JP')
+                          : new Date(order.previewEmailSentAt).toLocaleString('ja-JP')}
                       </p>
                     )}
                   </div>

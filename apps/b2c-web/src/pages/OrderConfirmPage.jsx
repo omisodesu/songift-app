@@ -20,11 +20,6 @@ const OrderConfirmPage = () => {
 
   // Phase1: 署名URL管理
   const [previewSignedUrl, setPreviewSignedUrl] = useState(null);
-  const [paymentLoading, setPaymentLoading] = useState(false);
-
-  // 2曲選択用の状態
-  const [previewSignedUrls, setPreviewSignedUrls] = useState([]);
-  const [selectLoading, setSelectLoading] = useState(false);
 
   // 問い合わせモーダル
   const [isInquiryModalOpen, setIsInquiryModalOpen] = useState(false);
@@ -126,71 +121,6 @@ const OrderConfirmPage = () => {
       fetchPreviewSignedUrl();
     }
   }, [order, orderId, token]);
-
-  // 2曲のプレビュー署名URL取得（previews_ready状態時）
-  useEffect(() => {
-    if ((order?.status === "previews_ready" || (order?.status === "song_timeout" && order?.generatedSongs)) && order.generatedSongs.length > 0) {
-      const fetchUrls = async () => {
-        const urls = await Promise.all(
-          order.generatedSongs.map(async (song, index) => {
-            try {
-              const getPreviewUrl = httpsCallable(functions, "getPreviewSignedUrlBySongIndex");
-              const result = await getPreviewUrl({ orderId, token, songIndex: index });
-              return result.data.signedUrl;
-            } catch (err) {
-              console.error(`Failed to get preview URL for song ${index}:`, err);
-              return null;
-            }
-          })
-        );
-        setPreviewSignedUrls(urls);
-      };
-      fetchUrls();
-    }
-  }, [order, orderId, token]);
-
-  // 曲選択ハンドラ
-  const handleSelectSong = async (songIndex) => {
-    if (!window.confirm('この曲を選択しますか？選択後は変更できません。')) return;
-
-    setSelectLoading(true);
-    try {
-      const selectSong = httpsCallable(functions, "selectSong");
-      await selectSong({ orderId, token, selectedSongIndex: songIndex });
-      alert('曲を選択しました！');
-      window.location.reload();
-    } catch (error) {
-      console.error('Selection error:', error);
-      alert('選択に失敗しました: ' + error.message);
-    } finally {
-      setSelectLoading(false);
-    }
-  };
-
-  // 支払い処理ハンドラ
-  const handlePayment = async () => {
-    if (!window.confirm('¥500の支払いを完了しますか？')) return;
-
-    setPaymentLoading(true);
-    try {
-      const functionsUrl = import.meta.env.VITE_FUNCTIONS_BASE_URL;
-      const response = await fetch(`${functionsUrl}/processPayment`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({orderId: order.id}),
-      });
-
-      if (!response.ok) throw new Error('支払い処理に失敗しました');
-
-      alert('支払いが完了しました！MP4動画をメールでお送りします。');
-      window.location.reload(); // ページをリロードして支払い完了状態を表示
-    } catch (error) {
-      console.error('Payment error:', error);
-      alert('支払い処理に失敗しました。管理者にお問い合わせください。');
-    } finally {
-      setPaymentLoading(false);
-    }
-  };
 
   // Phase1: 支払い状態チェック
   const isPaid = order?.isPaid || false;
@@ -339,44 +269,15 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
-        {/* 2曲選択UI（previews_ready状態時） */}
-        {(order.status === "previews_ready" || (order.status === "song_timeout" && order.generatedSongs)) && order.generatedSongs.length > 0 && (
-          <div className="mb-8 p-6 bg-purple-50 rounded-lg border-2 border-purple-200">
-            <h3 className="font-bold text-purple-800 mb-4 text-lg">
-              🎵 2曲からお好みの曲を選んでください
-            </h3>
-            <p className="text-sm text-gray-600 mb-4">
-              どちらの曲がお好みですか？選択した曲で動画を作成します。
+        {/* 楽曲制作中の案内（previews_ready / song_timeout + generatedSongs の場合）
+            現在は管理者が楽曲を選ぶ運用のため、ユーザーには選択UIを出さない */}
+        {(order.status === "previews_ready" || (order.status === "song_timeout" && order.generatedSongs && order.generatedSongs.length > 0)) && (
+          <div className="mb-8 p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
+            <h3 className="font-bold text-blue-800 mb-4 text-lg">🎵 現在制作中です</h3>
+            <p className="text-sm text-gray-700">
+              バースデーソングを制作中です。<br />
+              完成次第、ご登録のメールアドレスにお届けします。
             </p>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {order.generatedSongs.map((song, index) => (
-                <div
-                  key={index}
-                  className="p-4 rounded-lg border-2 border-gray-200 bg-white hover:border-purple-300 transition-all"
-                >
-                  <p className="font-bold text-gray-700 mb-2">曲 {index + 1}</p>
-                  {previewSignedUrls[index] ? (
-                    <audio
-                      controls
-                      src={previewSignedUrls[index]}
-                      className="w-full mb-3"
-                    />
-                  ) : (
-                    <div className="w-full h-12 bg-gray-100 rounded flex items-center justify-center mb-3">
-                      <span className="text-gray-400 text-sm">読み込み中...</span>
-                    </div>
-                  )}
-                  <button
-                    onClick={() => handleSelectSong(index)}
-                    disabled={selectLoading || !previewSignedUrls[index]}
-                    className="w-full py-2 rounded-lg font-bold transition-colors bg-purple-500 text-white hover:bg-purple-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                  >
-                    {selectLoading ? '処理中...' : 'この曲を選ぶ'}
-                  </button>
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
@@ -409,22 +310,7 @@ const OrderConfirmPage = () => {
           </div>
         )}
 
-        {/* 支払いボタン（曲選択後・未払い時のみ表示） */}
-        {!isPaid && order.status === "song_selected" && (
-          <div className="mb-8 p-6 bg-yellow-50 rounded-lg border-2 border-yellow-300">
-            <h3 className="font-bold text-yellow-800 mb-4 text-lg">💳 お支払い</h3>
-            <p className="text-sm text-gray-700 mb-4">
-              フル動画（MP4）をメールでお届けします。
-            </p>
-            <button
-              onClick={handlePayment}
-              disabled={paymentLoading}
-              className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg disabled:opacity-50"
-            >
-              {paymentLoading ? '処理中...' : '¥500を支払う'}
-            </button>
-          </div>
-        )}
+        {/* 支払い導線はユーザー側に表示しない（管理者運用のため一時非表示） */}
 
         {/* 支払い完了メッセージ（支払い済みの場合） */}
         {isPaid && (

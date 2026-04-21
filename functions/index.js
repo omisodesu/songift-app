@@ -447,16 +447,10 @@ exports.createOrder = onRequest({
 
     // B2C（simple/pro）のみ注文確認メールを送信
     if (plan !== "nursingHome") {
-      const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-      const orderUrl = `${frontendBaseUrl}/o/${orderId}?t=${token}`;
-
       const emailBody = `${email}様のバースデーソング作成を承りました。
 
-以下のURLから進捗状況を確認できます：
-${orderUrl}
-
-※このURLは30日間有効です。
-※完成次第、こちらのメールアドレスにお知らせします。
+完成次第、こちらのメールアドレスにお知らせします。
+もうしばらくお待ちください。
 
 ---
 Songift - 世界に一つのバースデーソング`;
@@ -777,65 +771,29 @@ exports.sendPreviewEmail = onRequest({
       return;
     }
 
-    // 注文データ取得
+    // 注文存在チェック
     const orderDoc = await admin.firestore().collection("orders").doc(orderId).get();
     if (!orderDoc.exists) {
       res.status(404).json({error: "注文が見つかりません"});
       return;
     }
-    const order = orderDoc.data();
 
-    const appEnv = process.env.APP_ENV || "prod";
-    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-
-    // 固定テンプレートでメール本文生成
-    const planName = order.plan === "simple" ? "魔法診断" :
-      order.plan === "niconico2026" ? "ニコ超2026 8bit" : "プロ";
-    const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-    const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
-
-    // フィードバックURL生成
-    const feedbackUrl = `${frontendBaseUrl}/feedback?ch=preview_email&oid=${orderId}`;
-
-    const emailBody = `${order.userEmail} 様
-
-この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
-
-${order.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました。
-
-以下のURLからプレビューをご確認いただけます：
-${previewUrl}
-
-気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
-お支払い確認後、フル動画（MP4）をメールでお届けします。
-
----
-
-ご感想をお聞かせください：
-${feedbackUrl}
-
----
-Songift運営チーム`;
-
-    const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${order.userEmail}様`;
-    const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
-
-    if (!emailDestination.shouldSkip) {
-      await sendEmail({
-        to: emailDestination.to,
-        subject: emailDestination.subject,
-        text: emailBody,
-        html: emailBody.replace(/\n/g, "<br>"),
-      });
-      console.log(`[sendPreviewEmail] Email sent to ${emailDestination.to}`);
-    }
-
+    // プレビュー案内メールは一時停止中（管理者が管理画面から楽曲を選択する運用）。
+    // 呼び出されてもメールは送信せず、ステータスのみ disabled に更新する。
     await admin.firestore().collection("orders").doc(orderId).update({
-      previewEmailStatus: "sent",
-      previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      previewEmailStatus: "disabled",
+      previewEmailDisabledReason: "temporary_admin_selection",
+      previewEmailSkippedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    res.status(200).json({success: true, message: "プレビュー案内メールを送信しました"});
+    console.log(`[sendPreviewEmail] Skipped (temporary_admin_selection) for order ${orderId}`);
+
+    res.status(200).json({
+      success: true,
+      disabled: true,
+      reason: "temporary_admin_selection",
+      message: "プレビュー案内メールは現在一時停止中です（管理者が管理画面から楽曲を選択する運用）",
+    });
   } catch (error) {
     console.error("[sendPreviewEmail] Error:", error);
     if (req.body.orderId) {
@@ -1143,59 +1101,22 @@ exports.generateVideoAssets = onCall({
       });
     }
 
-    // 7. メール送信
-    const appEnv = process.env.APP_ENV || "prod";
-    const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-    if (process.env.GMAIL_SERVICE_ACCOUNT_KEY) {
-      // 最新のorderデータを再取得
+    // 7. プレビュー案内メールは一時停止中（管理者が管理画面から楽曲を選択する運用）
+    // B2B（nursingHome）: 従来通りメール送信なし（管理者が直接対応）
+    // B2C（simple/pro）: 一時停止中のため送信せず、ステータスのみ更新する
+    {
       const updatedOrder = (await orderDoc.ref.get()).data();
 
       if (updatedOrder.plan === "nursingHome") {
-        // B2B（nursingHome）: メール送信なし（管理者が直接対応）
         console.log(`[generateVideoAssets] Skipping email for nursingHome order ${orderId}`);
       } else {
-        // B2C（simple/pro）: プレビュー案内メールを送信（MP4納品は支払い後にprocessVideoStep経由で送信）
-        const planName = updatedOrder.plan === "simple" ? "魔法診断" :
-          updatedOrder.plan === "niconico2026" ? "ニコ超2026 8bit" : "プロ";
-        const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-        const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${updatedOrder.accessToken}`;
-
-        const previewEmailBody = `${updatedOrder.userEmail} 様
-
-この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
-
-${updatedOrder.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました。
-
-以下のURLからプレビューをご確認いただけます：
-${previewUrl}
-
-気に入っていただけましたら、ページ内の支払いボタンから¥500をお支払いください。
-お支払い確認後、フル動画（MP4）をメールでお届けします。
-
----
-Songift運営チーム`;
-
-        const originalSubject = `【Songift】バースデーソングのプレビューが完成しました - ${updatedOrder.userEmail}様`;
-        const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, updatedOrder.userEmail, originalSubject);
-
-        if (!emailDestination.shouldSkip) {
-          await sendEmail({
-            to: emailDestination.to,
-            subject: emailDestination.subject,
-            text: previewEmailBody,
-            html: previewEmailBody.replace(/\n/g, "<br>"),
-          });
-          console.log(`[generateVideoAssets] Preview email sent to ${emailDestination.to}`);
-        }
-
-        // プレビューメール送信ステータス更新
         await orderDoc.ref.update({
-          previewEmailStatus: "sent",
-          previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          previewEmailStatus: "disabled",
+          previewEmailDisabledReason: "temporary_admin_selection",
+          previewEmailSkippedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
+        console.log(`[generateVideoAssets] Preview email skipped (temporary_admin_selection) for order ${orderId}`);
       }
-    } else {
-      console.warn("[generateVideoAssets] GMAIL_SERVICE_ACCOUNT_KEY not configured, skipping email");
     }
 
     console.log(`[generateVideoAssets] Completed for order: ${orderId}`);
@@ -3430,7 +3351,8 @@ async function processPreviewStep(orderRef, order, orderId) {
 /**
  * プレビュー完成メール送信ステップ
  * B2B（nursingHome）: 廃止（管理者が対応）
- * B2C（simple/pro）: 自動送信
+ * B2C（simple/pro）: 一時停止中（管理者が管理画面から楽曲を選択する運用）
+ * メール送信はしないが、自動処理が詰まらないようステータスだけ進める。
  */
 async function processEmailStep(orderRef, order, orderId) {
   if (order.plan === "nursingHome") {
@@ -3438,53 +3360,15 @@ async function processEmailStep(orderRef, order, orderId) {
     return;
   }
 
-  const appEnv = process.env.APP_ENV || "prod";
-  const stgOverrideTo = process.env.STG_EMAIL_OVERRIDE_TO || "";
-  const frontendBaseUrl = resolveFrontendBaseUrl(appEnv);
-  const previewUrl = `${frontendBaseUrl}/o/${orderId}?t=${order.accessToken}`;
-
-  const planName = order.plan === "simple" ? "魔法診断（簡単モード）" :
-    order.plan === "niconico2026" ? "ニコ超2026 8bit" : "プロモード";
-
-  const emailBody = `${order.userEmail} 様
-
-この度は、Songiftの「${planName}」プランをご利用いただき、誠にありがとうございます。
-
-${order.targetName}様への世界に一つだけのバースデーソング（15秒プレビュー）が完成いたしました！
-
-🎵 2曲のプレビューが完成しました！
-以下のURLからプレビューをご確認いただき、お好みの曲をお選びください：
-${previewUrl}
-
-気に入った曲を選択後、ページ内の支払いボタンから¥500をお支払いください。
-お支払い確認後、選択された曲でフル動画（MP4）を作成し、メールでお届けします。
-
----
-Songift運営チーム`;
-
-  const originalSubject = `【Songift】プレビュー完成！曲を選んでください - ${order.userEmail}様`;
-  const emailDestination = resolveEmailDestination(appEnv, stgOverrideTo, order.userEmail, originalSubject);
-
-  if (!emailDestination.shouldSkip) {
-    await sendEmail({
-      to: emailDestination.to,
-      subject: emailDestination.subject,
-      text: emailBody,
-      html: emailBody.replace(/\n/g, "<br>"),
-    });
-    console.log(`[processEmailStep] Preview email sent to ${emailDestination.to}`);
-  } else {
-    console.log(`[processEmailStep] Email skipped (STG environment)`);
-  }
-
   await orderRef.update({
-    previewEmailStatus: "sent",
-    previewEmailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+    previewEmailStatus: "disabled",
+    previewEmailDisabledReason: "temporary_admin_selection",
+    previewEmailSkippedAt: admin.firestore.FieldValue.serverTimestamp(),
     automationStatus: "completed",
     currentStep: null,
   });
 
-  console.log(`[processEmailStep] Completed for order ${orderId}`);
+  console.log(`[processEmailStep] Preview email skipped (temporary_admin_selection) for order ${orderId}`);
 }
 
 /**
