@@ -612,6 +612,27 @@ const AdminPage = ({ user, orgId = null }) => {
 
         {/* 注文一覧 */}
         <div className="space-y-6">
+          {filteredOrders.length === 0 && (
+            orgId ? (
+              <div className="bg-white rounded-xl shadow p-10 text-center">
+                <div className="text-5xl mb-4">🎂</div>
+                <h2 className="text-xl font-bold text-gray-800 mb-2">まだ注文がありません</h2>
+                <p className="text-sm text-gray-600 mb-6">
+                  最初のバースデーソング注文を作成してください
+                </p>
+                <button
+                  onClick={() => navigate('/order')}
+                  className="inline-block bg-amber-500 hover:bg-amber-600 text-white font-bold px-6 py-3 rounded-lg transition-colors"
+                >
+                  新規オーダーを作成
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl shadow p-10 text-center text-gray-500">
+                該当する注文がありません
+              </div>
+            )
+          )}
           {filteredOrders.map((order) => (
             <div key={order.id} className="bg-white rounded-xl shadow p-6">
               {/* ヘッダー情報 */}
