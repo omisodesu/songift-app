@@ -77,10 +77,11 @@ export const NH_GENDERS = [
 ];
 
 export const NH_GENRES = [
-  { label: "🎌 演歌（しっとり、情緒たっぷり）", value: "演歌" },
-  { label: "🌸 昭和歌謡（懐かしく、温かい）", value: "昭和歌謡" },
-  { label: "🎸 フォークソング（優しく、アコースティック）", value: "フォークソング" },
-  { label: "🎷 ジャズ（大人っぽく、落ち着いた）", value: "ジャズ" },
+  { label: "🎌 演歌（哀愁と力強さ・ポップ寄り）", value: "演歌" },
+  { label: "🎴 昭和歌謡（ノスタルジックなワルツ）", value: "昭和歌謡" },
+  { label: "🎼 フォークソング（語りかける温かさ）", value: "フォークソング" },
+  { label: "🎷 ジャズ（大人っぽくおしゃれ）", value: "ジャズ" },
+  { label: "🎶 ボサノバ（シティポップ風に爽やかに）", value: "ボサノバ" },
 ];
 
 export const NH_SEASONS = [

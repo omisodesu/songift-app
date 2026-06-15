@@ -2668,55 +2668,81 @@ const GENDER_GENRE_TO_KEY = {
   "男性_演歌": "C",
   "女性_演歌": "G",
   "男性_昭和歌謡": "G",
-  "女性_昭和歌謡": "C",
+  "女性_昭和歌謡": "D",
   "男性_フォークソング": "D",
-  "女性_フォークソング": "G",
+  "女性_フォークソング": "A",
   "男性_ジャズ": "F",
-  "女性_ジャズ": "Bb",
+  "女性_ジャズ": "G",
+  "男性_ボサノバ": "D",
+  "女性_ボサノバ": "A",
 };
 
 /**
  * ジャンル → 音楽設定
+ * rhythm: 拍子 / hasShortInstrumental: [Short instrumental]の有無
+ * maleVocal/femaleVocal: 性別別のボーカル指定（キーは含めない）
  */
 const NH_GENRE_TO_MUSIC = {
   "演歌": {
-    genre: "Enka",
-    bpm: 120,
-    instruments: "piano, strings, shakuhachi",
-    vocalStyle: "vibrato, melismatic, traditional enka vocal style",
+    genre: "Enka pop, Modern enka",
+    bpm: 130,
+    rhythm: "4/4 rhythm",
+    instruments: "piano, strings, shakuhachi, shamisen, taiko, handclaps",
+    hasShortInstrumental: false,
+    maleVocal: "Japanese male enka singer, powerful and clear voice, brilliant soaring high notes, strong vibrato, heavy melismatic ornamentation, traditional enka kobushi technique, vocal bending and scooping, youthful and refreshing modern enka pop style, bright and uplifting, masculine yet elegant",
+    femaleVocal: "Japanese female enka singer, powerful and crystal-clear voice, soaring high notes, strong vibrato, heavy melismatic ornamentation, traditional enka kobushi technique, vocal bending and scooping, modern heisei enka pop style, bright and uplifting, strong and elegant",
   },
   "昭和歌謡": {
     genre: "Showa kayo",
     bpm: 120,
+    rhythm: "3/4 waltz rhythm",
     instruments: "acoustic guitar, piano",
-    vocalStyle: "smooth, clear vocal, 1980s Japanese pop style, melodic phrasing",
+    hasShortInstrumental: true,
+    maleVocal: "Japanese male singer, emotional and heartfelt, 1980s Japanese kayokyoku style, melodic phrasing",
+    femaleVocal: "Japanese female singer, emotional and heartfelt, 1980s Japanese kayokyoku style, melodic phrasing",
   },
   "フォークソング": {
     genre: "Folk",
     bpm: 115,
+    rhythm: "4/4 rhythm",
     instruments: "acoustic guitar, harmonica",
-    vocalStyle: "warm, natural vocal, storytelling style, 1980s Japanese folk",
+    hasShortInstrumental: true,
+    maleVocal: "Japanese male folk singer, warm and tender voice, high and gentle tenor, storytelling style with poetic narration, intimate and reflective, 1970s-80s Japanese folk troubadour style",
+    femaleVocal: "Japanese female folk singer, warm and natural vocal, storytelling style, 1980s Japanese folk",
   },
   "ジャズ": {
-    genre: "Jazz b",
+    genre: "J-pop with jazz rock influence",
+    bpm: 95,
+    rhythm: "3/4 rhythm",
+    instruments: "piano, muted trumpet, vibraphone, upright bass, brushes drums, clap",
+    hasShortInstrumental: true,
+    maleVocal: "Japanese male singer, velvety and emotive baritone, deep and warm voice with emotional depth, dramatic and soulful expression, Japanese jazz rock crooner style",
+    femaleVocal: "Japanese female singer, jazz rock style, expressive and dramatic",
+  },
+  "ボサノバ": {
+    genre: "J-pop bossa, Japanese city pop bossa",
     bpm: 120,
-    instruments: "piano, saxophone",
-    vocalStyle: "smooth jazz vocal, relaxed phrasing, sophisticated 1980s style",
+    rhythm: "4/4 bossa nova rhythm",
+    instruments: "nylon-string guitar, electric piano (Rhodes), light strings, shaker, brushes drums, upright bass",
+    hasShortInstrumental: false,
+    maleVocal: "Japanese male solo singer, smooth and mellow voice, city pop maestro style, warm tenor with light falsetto, 1980s Japanese AOR city pop sophistication, groovy and refined",
+    femaleVocal: "Japanese female solo singer, city pop bossa style, sweet and breathy, smooth and mellow",
   },
 };
 
 /**
  * 人柄 → 追加タグ
+ * tags: 演歌以外で使う2タグ / enka: 演歌で使う1タグ
  */
 const NH_PERSONALITY_TO_TAGS = {
-  "優しくて温かい": "#loving #warm",
-  "頑張り屋で真面目": "#proud #accomplished",
-  "いつも笑顔で明るい": "#joyful #cheerful",
-  "感謝の気持ちを忘れない": "#grateful #thankful",
-  "人との会話が好き": "#warm #blessed",
-  "穏やかで落ち着いている": "#calm #peaceful",
-  "ユーモアがあって面白い": "#joyful #cheerful",
-  "好奇心旺盛": "#fulfilled #curious",
+  "優しくて温かい": {tags: "#loving #warm", enka: "#warm"},
+  "頑張り屋で真面目": {tags: "#proud #accomplished", enka: "#proud"},
+  "いつも笑顔で明るい": {tags: "#joyful #cheerful", enka: "#joyful"},
+  "感謝の気持ちを忘れない": {tags: "#grateful #thankful", enka: "#grateful"},
+  "人との会話が好き": {tags: "#warm #blessed", enka: "#blessed"},
+  "穏やかで落ち着いている": {tags: "#calm #peaceful", enka: "#calm"},
+  "ユーモアがあって面白い": {tags: "#joyful #cheerful", enka: "#cheerful"},
+  "好奇心旺盛": {tags: "#fulfilled #curious", enka: "#curious"},
 };
 
 /**
@@ -2728,11 +2754,20 @@ function buildNursingHomePrompt(order) {
     .join("\n");
 
   const genreMusicText = Object.entries(NH_GENRE_TO_MUSIC)
-    .map(([genre, music]) => `- ${genre} → ${music.genre}, ${music.bpm} bpm, ${music.instruments} / ${music.vocalStyle}`)
-    .join("\n");
+    .map(([genre, music]) => [
+      `### ${genre}`,
+      `Genre: ${music.genre}`,
+      `BPM: ${music.bpm} bpm`,
+      `Rhythm: ${music.rhythm}`,
+      `Instruments: ${music.instruments}`,
+      `[Short instrumental]: ${music.hasShortInstrumental ? "あり" : "なし"}`,
+      `- 男性ボーカル → ${music.maleVocal}`,
+      `- 女性ボーカル → ${music.femaleVocal}`,
+    ].join("\n"))
+    .join("\n\n");
 
   const personalityTagsText = Object.entries(NH_PERSONALITY_TO_TAGS)
-    .map(([personality, tags]) => `- ${personality} → ${tags}`)
+    .map(([personality, tag]) => `- ${personality} → ${tag.tags}（演歌は ${tag.enka} のみ）`)
     .join("\n");
 
   return `
@@ -2886,10 +2921,10 @@ Q6. この方の人柄で当てはまるものは?: ${order.nhPersonality}
 ---
 
 ## ■ Chorus / サビ(明るく温かいパート)
-**Q3(呼び名)を使った祝福メッセージ**
+**Q3(呼び名)をひらがなにして使った祝福メッセージ(ローマ字変換しない)**
 
-happy birthday ${order.targetName}
-happy birthday ${order.targetName}
+ハッピバースデー (Q3の呼び名・ひらがな)
+ハッピバースデー (Q3の呼び名・ひらがな)
 
 ---
 
@@ -2908,29 +2943,47 @@ happy birthday ${order.targetName}
 - 過去を懐かしみつつ、前向きな気持ち
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
-変換ルール
+変換ルール(Q1×Q2でジャンル・キー・ボーカル決定)
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ■ Q1(歌い手の性別)→ ボーカル性別 + キー決定
-- 男性の声 → male vocal
-- 女性の声 → female vocal
-※キーはQ1(性別)とQ2(ジャンル)の組み合わせで自動決定
-
-■ Q2(曲の雰囲気)→ ジャンル・BPM・楽器・キー・ボーカルスタイル
-※キーはQ1の性別によって変化
+- 男性の声 → 男性ボーカル
+- 女性の声 → 女性ボーカル
+※キーはQ1(性別)とQ2(ジャンル)の組み合わせで自動決定(すべてメジャーキー)
 
 【キー対応表】
 ${genderGenreKeyText}
 
+■ Q2(曲の雰囲気)→ ジャンル・BPM・拍子・楽器・ボーカル指定
+※該当ジャンルの設定をそのまま使用し、Q1の性別に対応するボーカル指定を選ぶ
+
 【ジャンル詳細】
 ${genreMusicText}
 
-■ Q4(生まれた季節)→ 歌詞に自然に組み込む(8パターンから1つをランダムに選択)
+■ Q4(生まれた季節)→ Verseの1行目に自然に組み込む(8パターンから1つをランダムに選択)
 
 ■ Q5(思い出のテーマ)→ Verseの2行目に反映
 
 ■ Q6(人柄)→ Pre-Chorusに反映 + 追加タグ
 ${personalityTagsText}
+※演歌のときだけタグは1つ(上記「演歌は」のもの)、それ以外のジャンルは2つとも使う
+
+━━━━━━━━━━━━━━━━━━━━━━━━━
+楽曲構成(Q2のジャンルで3パターンを使い分ける)
+━━━━━━━━━━━━━━━━━━━━━━━━━
+
+▼ A. 演歌の場合([Chorus]1回・[Short instrumental]なし)
+[Chorus](1回) → [Verse] → [Pre-Chorus] → [Chorus: peak](3回)
+
+▼ B. 昭和歌謡・フォークソング・ジャズの場合([Chorus]2回・[Short instrumental]あり)
+[Chorus](2回) → [Short instrumental] → [Verse] → [Pre-Chorus] → [Chorus: peak](3回)
+
+▼ C. ボサノバの場合([Chorus]2回・[Short instrumental]なし)
+[Chorus](2回) → [Verse] → [Pre-Chorus] → [Chorus: peak](3回)
+
+- [Verse]は「季節1パターン + 思い出」から創作した歌詞2行
+- [Pre-Chorus]は「人柄」から創作した歌詞2行
+- 各[Chorus]/[Chorus: peak]の行は「ハッピバースデー (呼び名・ひらがな)」
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 出力形式
@@ -2938,29 +2991,32 @@ ${personalityTagsText}
 
 【出力フォーマット (JSON)】
 必ず以下のJSON形式のみを出力してください。Markdown記法は不要です。
+lyricsは上記「楽曲構成」のうちQ2のジャンルに対応するパターン(A/B/C)で組み立ててください。
 {
-  "lyrics": "[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Verse]\\n(Q4の8パターンから1つ選択 + Q5から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Pre-Chorus]\\n(Q6から創作した哀愁漂う歌詞、すべてひらがなで表記)\\n[Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}\\n[Final Chorus]\\nhappy birthday ${order.targetName}\\nhappy birthday ${order.targetName}",
-  "sunoPrompt": "happy birthday | (ジャンル) | (BPM) bpm | key: (キー) | 3/4 waltz rhythm | (楽器) | Japanese (vocal性別) vocal | (ボーカルスタイル) | #birthday #nostalgic #emotional #upbeat #1min (Q6の追加タグ)"
+  "lyrics": "(楽曲構成A/B/Cに従ったセクション構成。[Verse]はQ4の8パターンから1つ選択+Q5から創作、[Pre-Chorus]はQ6から創作。歌詞は名前も含めすべてひらがなで表記。[Chorus]系の各行は『ハッピバースデー (呼び名・ひらがな)』)",
+  "sunoPrompt": "happy birthday | (ジャンル) | (BPM) bpm | (拍子) | key: (Q1×Q2のキー) | (楽器) | (Q1×Q2のボーカル指定) | #birthday #40sec #shortsong (Q6の追加タグ)"
 }
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 【注意事項】
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 - 選択肢は直接使わず、意味を理解して哀愁漂う歌詞に創作
-- Q3の呼び名はそのまま使用(ひらがな・カタカナ・漢字そのまま)
+- 歌詞は必ずすべてひらがなで出力(SUNOが漢字を読み間違えないため、名前もひらがな)
+- Q3の呼び名はひらがなのまま使用(例:マサルさん→まさるさん。カタカナ・漢字はひらがなに変換)
 - Q4の生まれた季節は、該当する季節の8パターンから1つをランダムに選び、Verseの1行目に自然に組み込む
 - Q5の思い出のテーマは、Verseの2行目に自然に組み込む
 - Q6の人柄は、Pre-Chorusに自然に組み込む
+- 楽曲構成はQ2のジャンルに応じてA/B/Cを正しく使い分ける
 - SUNOプロンプトは1行で出力
 - 楽器名は英語の小文字で
+- 拍子・BPM・楽器・ボーカル指定は、Q2のジャンルの設定をそのまま使う
 - キーはQ1(性別)とQ2(ジャンル)の組み合わせで自動決定される(すべてメジャーキー)
-- 各ジャンルにボーカルスタイル指定を追加
+- Q6の追加タグは、演歌のみ1つ、それ以外は2つ
 - 絵文字は歌詞に含めない
 - 毎回異なる表現で創作する
 - Verse/Pre-Chorusはそれぞれ25〜30文字、2行で1つの文章になるように
 - 年配者に響く、人生の重みを感じる言葉選び
 - 哀愁と温かさが共存する雰囲気
-- Chorusは4回繰り返し(happy birthdayを4回)
 
 上記のルールに従って、JSON形式で出力してください。
   `.trim();
@@ -2969,6 +3025,17 @@ ${personalityTagsText}
 // =====================================================
 // 自動化システム - ヘルパー関数
 // =====================================================
+
+/**
+ * Suno API用に歌詞を正規化する。
+ * "Your lyrics contain copyrighted material" エラー（"Happy Birthday to You" 検知）を回避するため、
+ * 英語表記の "happy birthday" をカタカナ "ハッピバースデー" に置換する。
+ * DBに保存する generatedLyrics は変更せず、Suno API への投入直前にのみ適用する。
+ */
+function normalizeLyricsForSuno(lyrics) {
+  if (typeof lyrics !== "string" || !lyrics) return lyrics;
+  return lyrics.replace(/happy\s+birthday/gi, "ハッピバースデー");
+}
 
 /**
  * 次のステップをキューに追加
@@ -3256,7 +3323,7 @@ async function processSongStep(orderRef, order, orderId) {
     "https://api.sunoapi.org/api/v1/generate",
     {
       customMode: true,
-      prompt: order.generatedLyrics,
+      prompt: normalizeLyricsForSuno(order.generatedLyrics),
       style: order.generatedPrompt,
       title: "Happy Birthday",
       instrumental: false,
@@ -3642,6 +3709,31 @@ exports.checkSunoStatusScheduled = onSchedule({
         errorCode != null ||
         errorMessage != null
       ) {
+        // copyrighted 検知時は queue 経由で1回だけ自動リトライ
+        // （processSongStep 内の normalizeLyricsForSuno でカタカナ化されて再投入される）
+        const isCopyrightError =
+          typeof errorMessage === "string" &&
+          /copyright/i.test(errorMessage) &&
+          !order.copyrightRetryDone;
+
+        if (isCopyrightError) {
+          await orderDoc.ref.update({
+            status: "processing",
+            sunoStatus: null,
+            sunoErrorCode: null,
+            sunoErrorMessage: null,
+            sunoTaskId: null,
+            songGenerationStartedAt: null,
+            automationStatus: "running",
+            currentStep: "song",
+            copyrightRetryDone: true,
+            copyrightRetryAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await scheduleNextStep(orderId, "song");
+          console.log(`[checkSunoStatusScheduled] Queued copyright retry for ${orderId}`);
+          continue;
+        }
+
         await orderDoc.ref.update({
           status: "song_failed",
           sunoStatus: dataStatus || "FAILED",
@@ -5227,7 +5319,7 @@ exports.startNursingHomeSongGeneration = onCall({
       "https://api.sunoapi.org/api/v1/generate",
       {
         customMode: true,
-        prompt: order.generatedLyrics,
+        prompt: normalizeLyricsForSuno(order.generatedLyrics),
         style: order.generatedPrompt,
         title: "Happy Birthday",
         instrumental: false,

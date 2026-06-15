@@ -209,43 +209,51 @@ const OrderPage = () => {
             </div>
             {formData.nhGenre && (
               <div className="mt-3 space-y-2">
-                <button
-                  type="button"
-                  onClick={() => { setShowQ3SampleMale(!showQ3SampleMale); setShowQ3SampleFemale(false); }}
-                  className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
-                >
-                  {showQ3SampleMale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・男性）`}
-                </button>
-                {showQ3SampleMale && (
-                  <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
-                    <iframe
-                      width="100%"
-                      height="100%"
-                      src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`男性_${formData.nhGenre}`]}`}
-                      title={`サンプル曲（${formData.nhGenre}・男性）`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  </div>
+                {SAMPLE_VIDEOS[`男性_${formData.nhGenre}`] && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setShowQ3SampleMale(!showQ3SampleMale); setShowQ3SampleFemale(false); }}
+                      className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
+                    >
+                      {showQ3SampleMale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・男性）`}
+                    </button>
+                    {showQ3SampleMale && (
+                      <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
+                        <iframe
+                          width="100%"
+                          height="100%"
+                          src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`男性_${formData.nhGenre}`]}`}
+                          title={`サンプル曲（${formData.nhGenre}・男性）`}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => { setShowQ3SampleFemale(!showQ3SampleFemale); setShowQ3SampleMale(false); }}
-                  className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
-                >
-                  {showQ3SampleFemale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・女性）`}
-                </button>
-                {showQ3SampleFemale && (
-                  <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
-                    <iframe
-                      width="100%"
-                      height="100%"
-                      src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`女性_${formData.nhGenre}`]}`}
-                      title={`サンプル曲（${formData.nhGenre}・女性）`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  </div>
+                {SAMPLE_VIDEOS[`女性_${formData.nhGenre}`] && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setShowQ3SampleFemale(!showQ3SampleFemale); setShowQ3SampleMale(false); }}
+                      className="text-sm text-amber-700 underline hover:text-amber-900 transition block"
+                    >
+                      {showQ3SampleFemale ? '▲ サンプルを閉じる' : `▶ サンプル曲を聴く（${formData.nhGenre}・女性）`}
+                    </button>
+                    {showQ3SampleFemale && (
+                      <div className="mt-2 aspect-video rounded-lg overflow-hidden shadow">
+                        <iframe
+                          width="100%"
+                          height="100%"
+                          src={`https://www.youtube.com/embed/${SAMPLE_VIDEOS[`女性_${formData.nhGenre}`]}`}
+                          title={`サンプル曲（${formData.nhGenre}・女性）`}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
