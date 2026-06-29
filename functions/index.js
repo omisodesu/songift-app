@@ -365,6 +365,7 @@ exports.createOrder = onRequest({
 
     // B2B注文（nursingHome）はorgId必須 + 認証・所属確認
     let orderOrgId = null;
+    let orgName = null;
     if (plan === "nursingHome") {
       const {orgId} = req.body;
       if (!orgId) {
@@ -405,6 +406,7 @@ exports.createOrder = onRequest({
         return;
       }
       orderOrgId = orgId;
+      orgName = orgDoc.data().name || orgId;
     }
 
     console.log(`Creating order for: ${email || "(no email)"}, plan: ${plan}${orderOrgId ? `, orgId: ${orderOrgId}` : ""}`);
@@ -479,7 +481,7 @@ Songift - 世界に一つのバースデーソング`;
       if (slackWebhookUrl) {
         let slackMessage;
         if (plan === "nursingHome") {
-          slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 楽曲生成\n*お名前:* ${formData.targetName}\n*性別:* ${formData.nhGender}\n*ジャンル:* ${formData.nhGenre}\n*季節:* ${formData.nhSeason}\n*思い出:* ${formData.nhMemory}\n*人柄:* ${formData.nhPersonality}\n*メール:* ${email}`;
+          slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 楽曲生成\n*お名前:* ${formData.targetName}\n*性別:* ${formData.nhGender}\n*ジャンル:* ${formData.nhGenre}\n*季節:* ${formData.nhSeason}\n*思い出:* ${formData.nhMemory}\n*人柄:* ${formData.nhPersonality}\n*団体名:* ${orgName}`;
         } else if (plan === "simple") {
           slackMessage = `🎉 *新しい注文が入りました！*\n\n*注文ID:* ${orderId}\n*プラン:* 魔法診断（簡単モード）\n*お名前:* ${formData.targetName}\n*色:* ${formData.targetColor}\n*気持ち:* ${Array.isArray(formData.targetFeeling) ? formData.targetFeeling.join(", ") : formData.targetFeeling}\n*魔法の言葉:* ${formData.magicWord}\n*魔法:* ${formData.magicSpell}\n*メール:* ${email}`;
         } else if (plan === "niconico2026") {
